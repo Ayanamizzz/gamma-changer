@@ -1,0 +1,40 @@
+# CMake and Visual Studio build output
+/build/
+/out/
+/cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+*.sln
+*.vcxproj*
+
+# Compiled artifacts and debug files
+*.exe
+*.dll
+*.lib
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.res
+
+# Local editor and user settings
+/.vscode/
+/.vs/
+*.user
+*.suo
+CMakeUserPresets.json
+
+# Runtime state and logs
+*.log
+*.tmp
+*.bak
+profiles.dat
+settings.dat
+gamma-changer*.ini
+
+# Windows metadata
+Thumbs.db
+Desktop.ini
+

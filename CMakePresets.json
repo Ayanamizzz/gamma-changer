@@ -1,0 +1,51 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "vs2022-x64",
+      "displayName": "Visual Studio 2022 x64",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/vs2022-x64",
+      "cacheVariables": {
+        "CMAKE_CXX_STANDARD": "17",
+        "CMAKE_CXX_STANDARD_REQUIRED": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "release-gui",
+      "displayName": "Release - GUI",
+      "configurePreset": "vs2022-x64",
+      "configuration": "Release",
+      "targets": ["gamma_changer_gui"]
+    },
+    {
+      "name": "release-cli",
+      "displayName": "Release - CLI",
+      "configurePreset": "vs2022-x64",
+      "configuration": "Release",
+      "targets": ["gamma_changer"]
+    },
+    {
+      "name": "release-profile-check",
+      "displayName": "Release - Profile migration check",
+      "configurePreset": "vs2022-x64",
+      "configuration": "Release",
+      "targets": ["profile_migration_check"]
+    },
+    {
+      "name": "release-safety-check",
+      "displayName": "Release - Core safety check",
+      "configurePreset": "vs2022-x64",
+      "configuration": "Release",
+      "targets": ["core_safety_check"]
+    }
+  ]
+}

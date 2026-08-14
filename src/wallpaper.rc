@@ -1,0 +1,3 @@
+#include "resource.h"
+
+IDR_UI_WALLPAPER RCDATA "../assets/sakura-wallpaper.png"
