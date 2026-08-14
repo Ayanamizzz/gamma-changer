@@ -1374,13 +1374,20 @@ void remove_tray_icon(HWND window) {
     Shell_NotifyIconW(NIM_DELETE, &data);
 }
 
+void show_main_window(HWND window) {
+    if (!IsWindow(window)) return;
+    ShowWindow(window, SW_RESTORE);
+    ShowWindow(window, SW_SHOW);
+    BringWindowToTop(window);
+    SetForegroundWindow(window);
+}
+
 bool apply_profile_from_tray(GuiState& gui, std::size_t index) {
     if (index >= kPresetCount || !gui.presets[index].occupied) return false;
     if (gui.dirty) {
         KillTimer(gui.window, kAutoSaveTimer);
         if (!save_and_apply_current(gui, true)) {
-            ShowWindow(gui.window, SW_SHOW);
-            SetForegroundWindow(gui.window);
+            show_main_window(gui.window);
             return false;
         }
     }
@@ -1432,17 +1439,17 @@ void show_tray_menu(HWND window) {
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(profiles), L"Profiles");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kTrayExitCommand, L"Exit");
-    SetForegroundWindow(window);
-
     POINT point{};
     GetCursorPos(&point);
-    const UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY,
-                                        point.x, point.y, 0, window, nullptr);
+    SetForegroundWindow(window);
+    const UINT command = TrackPopupMenuEx(menu,
+                                          TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+                                          point.x, point.y, window, nullptr);
+    PostMessageW(window, WM_NULL, 0, 0);
     DestroyMenu(menu);
 
     if (command == kTrayShowCommand) {
-        ShowWindow(window, SW_SHOW);
-        SetForegroundWindow(window);
+        show_main_window(window);
     } else if (command == kTrayExitCommand) {
         SendMessageW(window, WM_CLOSE, 0, 0);
     } else if (gui && command >= kTrayProfileCommandBase &&
@@ -2495,13 +2502,22 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         }
         return 0;
     case kTrayMessage:
-        if (lparam == WM_LBUTTONUP && gui) {
-            ShowWindow(window, SW_SHOW);
-            SetForegroundWindow(window);
-        } else if (lparam == WM_RBUTTONUP) {
+    {
+        // NOTIFYICON_VERSION_4 packs the event into LOWORD(lParam) and the icon ID
+        // into HIWORD(lParam). Older shell versions pass the event directly in lParam.
+        // Reading LOWORD works for both layouts.
+        const UINT notification = LOWORD(static_cast<DWORD_PTR>(lparam));
+        const UINT packed_icon_id = HIWORD(static_cast<DWORD_PTR>(lparam));
+        if (packed_icon_id != 0 && packed_icon_id != kTrayId) return 0;
+
+        if ((notification == NIN_SELECT || notification == NIN_KEYSELECT ||
+             notification == WM_LBUTTONUP || notification == WM_LBUTTONDBLCLK) && gui) {
+            show_main_window(window);
+        } else if (notification == WM_CONTEXTMENU || notification == WM_RBUTTONUP) {
             show_tray_menu(window);
         }
         return 0;
+    }
     case WM_SIZE:
         if (wparam == SIZE_MINIMIZED) {
             log_message(LogLevel::info, L"Main window minimized to the notification area");
