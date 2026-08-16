@@ -4,7 +4,7 @@ Gamma Changer is a native Windows desktop utility for adjusting the software gam
 each connected display. It provides a modern, high-DPI Win32 interface with per-monitor
 settings, four reusable profiles, direct numeric input, and a live tone-response preview.
 
-Current version: **2.3.2**
+Current version: **2.4.0**
 
 ## Features
 

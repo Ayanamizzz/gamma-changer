@@ -171,8 +171,8 @@ void duplicate_profile(GuiState& gui, std::size_t source_index) {
         gui.profiles = previous;
         return;
     }
-    gui.active_preset = gui.profiles.size() - 1;
-    scroll_profile_into_view(gui, gui.active_preset);
+    // Creating a copy is a list operation only: keep the current selection and
+    // current display calibration unchanged.
     refresh_preset_buttons(gui);
     layout_controls_for_current_size(gui);
     set_status(gui, copy.name + L" created", StatusTone::success);
@@ -195,8 +195,8 @@ void create_profile_from_current(GuiState& gui) {
         gui.profiles = previous;
         return;
     }
-    gui.active_preset = gui.profiles.size() - 1;
-    scroll_profile_into_view(gui, gui.active_preset);
+    // Creating a new profile must not select or apply it. The user stays on the
+    // current profile; the new profile is simply appended to the list.
     refresh_preset_buttons(gui);
     layout_controls_for_current_size(gui);
     set_status(gui, profile.name + L" created with default settings", StatusTone::success);
