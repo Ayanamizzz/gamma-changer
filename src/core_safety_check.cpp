@@ -274,17 +274,23 @@ bool check_store() {
                   L"profiles v1 must round-trip");
 
     const auto valid_profiles_path = temporary.path / L"profiles.v1";
-    std::wifstream valid_input(valid_profiles_path);
-    const std::wstring valid_contents((std::istreambuf_iterator<wchar_t>(valid_input)),
-                                      std::istreambuf_iterator<wchar_t>());
+    std::wstring valid_contents;
+    {
+        std::wifstream valid_input(valid_profiles_path);
+        valid_contents.assign((std::istreambuf_iterator<wchar_t>(valid_input)),
+                              std::istreambuf_iterator<wchar_t>());
+    }
     std::vector<Profile> invalid_profiles = profiles;
     invalid_profiles.push_back({L"", L"Broken", settings, true});
     error.clear();
     ok &= expect(!store.save_profiles(invalid_profiles, error),
                  L"an invalid profile collection must be rejected as a whole");
-    std::wifstream unchanged_input(valid_profiles_path);
-    const std::wstring unchanged_contents((std::istreambuf_iterator<wchar_t>(unchanged_input)),
-                                          std::istreambuf_iterator<wchar_t>());
+    std::wstring unchanged_contents;
+    {
+        std::wifstream unchanged_input(valid_profiles_path);
+        unchanged_contents.assign((std::istreambuf_iterator<wchar_t>(unchanged_input)),
+                                  std::istreambuf_iterator<wchar_t>());
+    }
     ok &= expect(valid_contents == unchanged_contents,
                  L"rejecting invalid profiles must not overwrite the existing file");
 
@@ -296,11 +302,25 @@ bool check_store() {
     std::vector<Profile> empty_profiles;
     ok &= expect(!store.save_profiles(empty_profiles, error),
                  L"an empty profile collection must be rejected before writing");
-    std::wifstream still_valid_input(valid_profiles_path);
-    const std::wstring still_valid_contents((std::istreambuf_iterator<wchar_t>(still_valid_input)),
-                                            std::istreambuf_iterator<wchar_t>());
+    std::wstring still_valid_contents;
+    {
+        std::wifstream still_valid_input(valid_profiles_path);
+        still_valid_contents.assign((std::istreambuf_iterator<wchar_t>(still_valid_input)),
+                                    std::istreambuf_iterator<wchar_t>());
+    }
     ok &= expect(still_valid_contents == valid_contents,
                  L"rejected profile writes must leave the previous file intact");
+
+    const std::wstring unicode_name = L"\x4e2d\x6587\x914d\x7f6e \xD83D\xDE00";
+    const std::vector<Profile> unicode_profiles{{L"unicode-id", unicode_name, settings, true}};
+    error.clear();
+    ok &= expect(store.save_profiles(unicode_profiles, error),
+                 L"profiles with Chinese names must save as UTF-8");
+    loaded_profiles.clear();
+    ok &= expect(store.load_profiles(loaded_profiles) == ProfileLoadStatus::loaded &&
+                     loaded_profiles.size() == 1 &&
+                     loaded_profiles[0].name == unicode_name,
+                 L"profiles with Chinese names must round-trip");
 
     {
         std::wofstream output(temporary.path / L"profiles.v1", std::ios::trunc);

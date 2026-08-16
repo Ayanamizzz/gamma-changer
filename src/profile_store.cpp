@@ -8,6 +8,7 @@
 #include <fstream>
 #include <functional>
 #include <iomanip>
+#include <iterator>
 #include <sstream>
 #include <unordered_set>
 
@@ -38,6 +39,78 @@ bool replace_file(const std::filesystem::path& temporary,
     std::error_code ignored;
     std::filesystem::remove(temporary, ignored);
     return false;
+}
+
+// Configuration files are UTF-8 on disk. std::wifstream/std::wofstream depend
+// on the process locale, so Chinese profile names fail to save under the
+// default "C" locale; convert explicitly with the Win32 UTF-8 codec instead.
+std::string to_utf8(const std::wstring& value) {
+    if (value.empty()) return std::string{};
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, value.data(),
+                                          static_cast<int>(value.size()),
+                                          nullptr, 0, nullptr, nullptr);
+    if (bytes <= 0) return std::string{};
+    std::string result(static_cast<std::size_t>(bytes), '\0');
+    if (WideCharToMultiByte(CP_UTF8, 0, value.data(),
+                            static_cast<int>(value.size()), result.data(), bytes,
+                            nullptr, nullptr) != bytes) {
+        return std::string{};
+    }
+    return result;
+}
+
+std::wstring from_utf8(const std::string& value) {
+    if (value.empty()) return std::wstring{};
+    const int chars = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                          value.data(),
+                                          static_cast<int>(value.size()),
+                                          nullptr, 0);
+    if (chars <= 0) return std::wstring{};
+    std::wstring result(static_cast<std::size_t>(chars), L'\0');
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
+                            static_cast<int>(value.size()), result.data(),
+                            chars) != chars) {
+        return std::wstring{};
+    }
+    return result;
+}
+
+bool read_utf8_text_file(const std::filesystem::path& path, std::wstring& text) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) return false;
+    const std::string bytes((std::istreambuf_iterator<char>(input)),
+                            std::istreambuf_iterator<char>());
+    if (input.bad()) return false;
+    if (bytes.empty()) {
+        text.clear();
+        return true;
+    }
+    text = from_utf8(bytes);
+    return !text.empty();
+}
+
+bool write_utf8_text_file(const std::filesystem::path& path,
+                          const std::wstring& text, std::wstring& error,
+                          const wchar_t* description) {
+    const std::string bytes = to_utf8(text);
+    if (!text.empty() && bytes.empty()) {
+        error = L"cannot encode " + std::wstring(description) + L" as UTF-8";
+        return false;
+    }
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        error = L"cannot write " + std::wstring(description) + L" file";
+        return false;
+    }
+    if (!bytes.empty()) {
+        output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    }
+    output.close();
+    if (!output) {
+        error = L"failed while writing " + std::wstring(description) + L" file";
+        return false;
+    }
+    return true;
 }
 
 HANDLE store_write_mutex() {
@@ -177,13 +250,14 @@ bool ProfileStore::try_load_params(const std::wstring& display_id, GammaParams& 
     params = default_params();
     const auto primary = params_path(display_id);
     if (file_exceeds(primary, kParamsFileLimit)) return false;
-    std::wifstream input(primary);
-    if (!input) {
+    std::wstring file_text;
+    if (!read_utf8_text_file(primary, file_text)) {
         const auto legacy = root_ / (legacy_hashed_filename(display_id) + L".profile");
         if (legacy == primary) return false;
-        input.open(legacy);
-        if (!input) return false;
+        if (!read_utf8_text_file(legacy, file_text)) return false;
     }
+
+    std::wistringstream input(file_text);
 
     std::wstring key;
     double value = 0.0;
@@ -231,21 +305,15 @@ bool ProfileStore::save_params(const std::wstring& display_id, const GammaParams
     StoreWriteLock lock;
     const auto target = params_path(display_id);
     const auto temporary = target.wstring() + L".tmp";
-    std::wofstream output(temporary, std::ios::trunc);
-    if (!output) {
-        error = L"cannot write profile file";
-        return false;
-    }
-    output << std::setprecision(17)
-           << L"gamma " << params.gamma << L'\n'
-           << L"brightness " << params.brightness << L'\n'
-           << L"contrast " << params.contrast << L'\n'
-           << L"r_gain " << params.r_gain << L'\n'
-           << L"g_gain " << params.g_gain << L'\n'
-           << L"b_gain " << params.b_gain << L'\n';
-    output.close();
-    if (!output) {
-        error = L"failed while writing profile file";
+    std::wostringstream content;
+    content << std::setprecision(17)
+            << L"gamma " << params.gamma << L'\n'
+            << L"brightness " << params.brightness << L'\n'
+            << L"contrast " << params.contrast << L'\n'
+            << L"r_gain " << params.r_gain << L'\n'
+            << L"g_gain " << params.g_gain << L'\n'
+            << L"b_gain " << params.b_gain << L'\n';
+    if (!write_utf8_text_file(temporary, content.str(), error, L"profile")) {
         std::error_code ignored;
         std::filesystem::remove(temporary, ignored);
         return false;
@@ -256,8 +324,9 @@ bool ProfileStore::save_params(const std::wstring& display_id, const GammaParams
 std::array<PresetSlot, kPresetCount> ProfileStore::load_presets() const {
     std::array<PresetSlot, kPresetCount> presets{};
     if (file_exceeds(presets_path(root_), kPresetsFileLimit)) return presets;
-    std::wifstream input(presets_path(root_));
-    if (!input) return presets;
+    std::wstring file_text;
+    if (!read_utf8_text_file(presets_path(root_), file_text)) return presets;
+    std::wistringstream input(file_text);
 
     std::array<bool, kPresetCount> seen{};
     std::wstring line;
@@ -310,24 +379,18 @@ bool ProfileStore::save_presets(const std::array<PresetSlot, kPresetCount>& pres
     StoreWriteLock lock;
     const auto target = presets_path(root_);
     const auto temporary = target.wstring() + L".tmp";
-    std::wofstream output(temporary, std::ios::trunc);
-    if (!output) {
-        error = L"cannot write presets file";
-        return false;
-    }
-    output << std::setprecision(17);
+    std::wostringstream content;
+    content << std::setprecision(17);
     for (std::size_t i = 0; i < kPresetCount; ++i) {
         const auto& slot = presets[i];
         const auto params = slot.occupied ? slot.params : default_params();
         std::wstring name = slot.name;
         for (auto& ch : name) if (ch == L'\t' || ch == L'\r' || ch == L'\n') ch = L' ';
-        output << i << L' ' << (slot.occupied ? 1 : 0) << L' ' << std::quoted(name) << L' '
-               << params.gamma << L' ' << params.brightness << L' ' << params.contrast << L' '
-               << params.r_gain << L' ' << params.g_gain << L' ' << params.b_gain << L'\n';
+        content << i << L' ' << (slot.occupied ? 1 : 0) << L' ' << std::quoted(name) << L' '
+                << params.gamma << L' ' << params.brightness << L' ' << params.contrast << L' '
+                << params.r_gain << L' ' << params.g_gain << L' ' << params.b_gain << L'\n';
     }
-    output.close();
-    if (!output) {
-        error = L"failed while writing presets file";
+    if (!write_utf8_text_file(temporary, content.str(), error, L"presets")) {
         std::error_code ignored;
         std::filesystem::remove(temporary, ignored);
         return false;
@@ -340,8 +403,15 @@ ProfileLoadStatus ProfileStore::load_profiles(std::vector<Profile>& profiles) co
     if (file_exceeds(profiles_path(), kProfilesFileLimit)) {
         return ProfileLoadStatus::corrupt;
     }
-    std::wifstream input(profiles_path());
-    if (!input) return ProfileLoadStatus::missing;
+    std::ifstream byte_input(profiles_path(), std::ios::binary);
+    if (!byte_input) return ProfileLoadStatus::missing;
+    const std::string bytes((std::istreambuf_iterator<char>(byte_input)),
+                            std::istreambuf_iterator<char>());
+    const std::wstring file_text = from_utf8(bytes);
+    if (byte_input.bad() || (!bytes.empty() && file_text.empty())) {
+        return ProfileLoadStatus::corrupt;
+    }
+    std::wistringstream input(file_text);
 
     std::wstring header;
     std::size_t version = 0;
@@ -417,24 +487,18 @@ bool ProfileStore::save_profiles(const std::vector<Profile>& profiles,
     StoreWriteLock lock;
     const auto target = profiles_path();
     const auto temporary = target.wstring() + L".tmp";
-    std::wofstream output(temporary, std::ios::trunc);
-    if (!output) {
-        error = L"cannot write profiles file";
-        return false;
-    }
-    output << L"GammaChangerProfiles 1\n" << std::setprecision(17);
+    std::wostringstream content;
+    content << L"GammaChangerProfiles 1\n" << std::setprecision(17);
     for (const auto& profile : profiles) {
         std::wstring name = profile.name;
         for (auto& ch : name) if (ch == L'\t' || ch == L'\r' || ch == L'\n') ch = L' ';
-        output << std::quoted(profile.id) << L' ' << std::quoted(name) << L' '
-               << (profile.saved ? 1 : 0) << L' '
-               << profile.settings.gamma << L' ' << profile.settings.brightness << L' '
-               << profile.settings.contrast << L' ' << profile.settings.r_gain << L' '
-               << profile.settings.g_gain << L' ' << profile.settings.b_gain << L'\n';
+        content << std::quoted(profile.id) << L' ' << std::quoted(name) << L' '
+                << (profile.saved ? 1 : 0) << L' '
+                << profile.settings.gamma << L' ' << profile.settings.brightness << L' '
+                << profile.settings.contrast << L' ' << profile.settings.r_gain << L' '
+                << profile.settings.g_gain << L' ' << profile.settings.b_gain << L'\n';
     }
-    output.close();
-    if (!output) {
-        error = L"failed while writing profiles file";
+    if (!write_utf8_text_file(temporary, content.str(), error, L"profiles")) {
         std::error_code ignored;
         std::filesystem::remove(temporary, ignored);
         return false;
