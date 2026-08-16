@@ -110,6 +110,15 @@ std::wstring display_metadata(const DisplayInfo& display) {
     return text;
 }
 
+void set_display_status(GuiState& gui, const std::wstring& text) {
+    SetWindowTextW(gui.display_status, text.c_str());
+    // The status label paints transparently over the composited sidebar. Text
+    // updates repaint only the control, so explicitly redraw the parent layer
+    // underneath as well; otherwise the previous display's metadata stays
+    // visible and overlaps the new one.
+    invalidate_control_background(gui, gui.display_status, 0);
+}
+
 
 
 
@@ -469,7 +478,7 @@ void refresh_displays(GuiState& gui) {
             }
         }
         const std::wstring metadata = display_metadata(gui.displays[selected]);
-        SetWindowTextW(gui.display_status, metadata.c_str());
+        set_display_status(gui, metadata);
         if (gui.displays[selected].hdr_active) {
             set_status(gui, L"HDR is active; Windows or the GPU may limit Gamma adjustments",
                        StatusTone::warning);
@@ -480,7 +489,7 @@ void refresh_displays(GuiState& gui) {
         gui.active_display_index = -1;
         EnableWindow(gui.display_combo, FALSE);
         set_adjustment_enabled(gui, false);
-        SetWindowTextW(gui.display_status, L"No display connected");
+        set_display_status(gui, L"No display connected");
         set_status(gui, L"No attached displays found", StatusTone::warning);
     }
 }

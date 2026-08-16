@@ -187,6 +187,7 @@ struct GuiState {
 GuiState* state(HWND window);
 GammaParams params_from_sliders(const GuiState& gui);
 void set_status(GuiState& gui, const std::wstring& text, StatusTone tone);
+void set_display_status(GuiState& gui, const std::wstring& text);
 const DisplayInfo* selected_display(const GuiState& gui);
 void set_params_to_controls(GuiState& gui, const GammaParams& params);
 void refresh_preset_buttons(GuiState& gui);

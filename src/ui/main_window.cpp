@@ -292,7 +292,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             const int index = selected_display_index(*gui);
             if (index >= 0 && index < static_cast<int>(gui->displays.size())) {
                 const std::wstring metadata = display_metadata(gui->displays[index]);
-                SetWindowTextW(gui->display_status, metadata.c_str());
+                set_display_status(*gui, metadata);
                 set_status(*gui, L"Ready", StatusTone::success);
             }
             return 0;
