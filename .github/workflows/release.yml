@@ -1,0 +1,79 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -A x64
+
+      - name: Build Release
+        run: cmake --build build --config Release -- /p:TreatWarningAsError=true
+
+      - name: Run Release checks
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Sign executable
+        env:
+          SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
+          SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+        shell: pwsh
+        run: .\scripts\sign-release.ps1 -ExePath .\build\Release\gamma_changer_gui.exe
+
+      - name: Package assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tag = "${{ github.ref_name }}"
+          $exe = (Resolve-Path "build\Release\gamma_changer_gui.exe").Path
+          $staging = Join-Path $env:RUNNER_TEMP ("gamma-changer-" + $tag)
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+          Copy-Item -LiteralPath $exe -Destination (Join-Path $staging "gamma_changer_gui.exe") -Force
+          $zip = "gamma-changer-$tag-win-x64.zip"
+          $zipPath = Join-Path $staging $zip
+          Compress-Archive -Path (Join-Path $staging "gamma_changer_gui.exe") `
+              -DestinationPath $zipPath -CompressionLevel Optimal
+          $exeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
+          $zipHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zipPath).Hash.ToLowerInvariant()
+          @(
+            "SHA256 ($zip) = $zipHash",
+            "SHA256 (gamma_changer_gui.exe) = $exeHash"
+          ) | Set-Content -LiteralPath (Join-Path $staging "SHA256SUMS.txt") -Encoding ASCII
+          Copy-Item -LiteralPath $zipPath -Destination $env:RUNNER_TEMP -Force
+          Copy-Item -LiteralPath $exe -Destination $env:RUNNER_TEMP -Force
+          Copy-Item -LiteralPath (Join-Path $staging "SHA256SUMS.txt") `
+              -Destination $env:RUNNER_TEMP -Force
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $zip = "gamma-changer-$tag-win-x64.zip"
+          $notes = Join-Path $env:RUNNER_TEMP "release-notes.txt"
+          @(
+            "## Assets",
+            "",
+            "- $zip — signed with SHA256 when a signing certificate is configured",
+            "- gamma_changer_gui.exe — unsigned/raw executable",
+            "- SHA256SUMS.txt — checksums for the assets above",
+            "- Source code archives are attached automatically by GitHub"
+          ) | Set-Content -LiteralPath $notes -Encoding UTF8
+          gh release create $tag `
+            --repo $env:GITHUB_REPOSITORY `
+            --draft `
+            --title "Gamma Changer $tag" `
+            --notes-file $notes `
+            (Join-Path $env:RUNNER_TEMP $zip) `
+            (Join-Path $env:RUNNER_TEMP "gamma_changer_gui.exe") `
+            (Join-Path $env:RUNNER_TEMP "SHA256SUMS.txt")
