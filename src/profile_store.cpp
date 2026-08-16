@@ -147,6 +147,7 @@ bool file_exceeds(const std::filesystem::path& path, std::uintmax_t limit) {
 constexpr std::uintmax_t kParamsFileLimit = 64 * 1024;
 constexpr std::uintmax_t kPresetsFileLimit = 64 * 1024;
 constexpr std::uintmax_t kProfilesFileLimit = 4 * 1024 * 1024;
+constexpr std::uintmax_t kProfilePreferencesFileLimit = 64 * 1024;
 constexpr std::uintmax_t kRampFileLimit = 4096;
 constexpr std::size_t kMaxProfileRows = 1024;
 constexpr std::size_t kMaxPresetNameLength = 64;
@@ -234,6 +235,10 @@ std::filesystem::path ProfileStore::ramp_path(const std::wstring& display_id) co
 
 std::filesystem::path ProfileStore::profiles_path() const {
     return root_ / L"profiles.v1";
+}
+
+std::filesystem::path ProfileStore::profile_preferences_path() const {
+    return root_ / L"profile_preferences.v1";
 }
 
 std::filesystem::path presets_path(const std::filesystem::path& root) {
@@ -504,6 +509,85 @@ bool ProfileStore::save_profiles(const std::vector<Profile>& profiles,
         return false;
     }
 
+    return replace_file(temporary, target, error);
+}
+
+std::vector<DisplayProfilePreference> ProfileStore::load_profile_preferences() const {
+    std::vector<DisplayProfilePreference> preferences;
+    if (file_exceeds(profile_preferences_path(), kProfilePreferencesFileLimit)) {
+        return preferences;
+    }
+    std::wstring file_text;
+    if (!read_utf8_text_file(profile_preferences_path(), file_text)) return preferences;
+
+    std::wistringstream input(file_text);
+    std::wstring header;
+    std::size_t version = 0;
+    if (!(input >> header >> version) ||
+        header != L"GammaChangerProfilePreferences" || version != 1) {
+        return preferences;
+    }
+    std::wstring line;
+    std::getline(input, line);
+    if (line.find_first_not_of(L" \t\r") != std::wstring::npos) return preferences;
+
+    std::unordered_set<std::wstring> display_ids;
+    while (std::getline(input, line)) {
+        if (line.find_first_not_of(L" \t\r") == std::wstring::npos) continue;
+        if (preferences.size() >= kMaxProfileRows) return {};
+        std::wistringstream row(line);
+        DisplayProfilePreference preference;
+        if (!(row >> std::quoted(preference.display_id) >> std::quoted(preference.profile_id))) {
+            return {};
+        }
+        row >> std::ws;
+        if (!row.eof() || preference.display_id.empty() || preference.profile_id.empty() ||
+            !display_ids.insert(preference.display_id).second) {
+            return {};
+        }
+        preferences.push_back(preference);
+    }
+    return preferences;
+}
+
+bool ProfileStore::save_profile_preferences(
+    const std::vector<DisplayProfilePreference>& preferences,
+    std::wstring& error) const {
+    std::unordered_set<std::wstring> display_ids;
+    for (const auto& preference : preferences) {
+        if (preference.display_id.empty() || preference.profile_id.empty()) {
+            error = L"refusing to save an invalid display profile preference";
+            return false;
+        }
+        if (!display_ids.insert(preference.display_id).second) {
+            error = L"refusing to save duplicate display profile preferences";
+            return false;
+        }
+        if (preference.display_id.find(L'\t') != std::wstring::npos ||
+            preference.display_id.find(L'\r') != std::wstring::npos ||
+            preference.display_id.find(L'\n') != std::wstring::npos ||
+            preference.profile_id.find(L'\t') != std::wstring::npos ||
+            preference.profile_id.find(L'\r') != std::wstring::npos ||
+            preference.profile_id.find(L'\n') != std::wstring::npos) {
+            error = L"refusing to save display profile preferences with line breaks";
+            return false;
+        }
+    }
+
+    StoreWriteLock lock;
+    const auto target = profile_preferences_path();
+    const auto temporary = target.wstring() + L".tmp";
+    std::wostringstream content;
+    content << L"GammaChangerProfilePreferences 1\n";
+    for (const auto& preference : preferences) {
+        content << std::quoted(preference.display_id) << L' '
+                << std::quoted(preference.profile_id) << L'\n';
+    }
+    if (!write_utf8_text_file(temporary, content.str(), error, L"profile preferences")) {
+        std::error_code ignored;
+        std::filesystem::remove(temporary, ignored);
+        return false;
+    }
     return replace_file(temporary, target, error);
 }
 

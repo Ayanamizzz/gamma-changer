@@ -36,7 +36,7 @@ void mark_changed(GuiState& gui) {
     gui.session.dirty = !settings_equal(params_from_sliders(gui), gui.session.committed_settings);
     EnableWindow(gui.before_after_button, gui.session.dirty && gui.live_preview ? TRUE : FALSE);
     if (gui.session.dirty) {
-        SetWindowTextW(gui.apply_button, L"Saving...");
+        SetWindowTextW(gui.apply_button, L"Auto-saving...");
         EnableWindow(gui.apply_button, FALSE);
         SetTimer(gui.window, kAutoSaveTimer, kAutoSaveDelayMs, nullptr);
     } else {
@@ -50,7 +50,8 @@ void mark_changed(GuiState& gui) {
     } else {
         set_status(gui,
                    gui.session.dirty
-                       ? (gui.live_preview ? L"Previewing changes live" : L"Changes ready to apply")
+                       ? (gui.live_preview ? L"Previewing changes live  |  Auto-save in progress"
+                                           : L"Changes ready to apply  |  Auto-save in progress")
                        : L"Ready",
                    gui.session.dirty && gui.live_preview ? StatusTone::success : StatusTone::idle);
     }
@@ -311,9 +312,95 @@ void select_display_item(GuiState& gui, int display_index) {
     }
 }
 
-void load_selected_profile(GuiState& gui) {
+bool persist_profile_preferences(GuiState& gui) {
+    std::vector<DisplayProfilePreference> preferences;
+    preferences.reserve(gui.preferred_profile_ids.size());
+    for (const auto& [display_id, profile_id] : gui.preferred_profile_ids) {
+        preferences.push_back({display_id, profile_id});
+    }
+    std::wstring error;
+    if (!gui.store.save_profile_preferences(preferences, error)) {
+        log_message(LogLevel::warning,
+                    L"Could not save display profile preferences: " + error);
+        return false;
+    }
+    return true;
+}
+
+void remember_active_profile_for_display(GuiState& gui, const DisplayInfo& display) {
+    if (gui.active_preset >= gui.profiles.size()) return;
+    const std::wstring storage_id = display_storage_id(display);
+    const std::wstring& profile_id = gui.profiles[gui.active_preset].id;
+    const auto existing = gui.preferred_profile_ids.find(storage_id);
+    if (existing != gui.preferred_profile_ids.end() && existing->second == profile_id) return;
+    gui.preferred_profile_ids[storage_id] = profile_id;
+    persist_profile_preferences(gui);
+}
+
+bool apply_preferred_profile_to_display(GuiState& gui, const DisplayInfo& display) {
+    if (gui.profiles.empty()) return true;
+    const std::size_t fallback_index =
+        gui.active_preset < gui.profiles.size() ? gui.active_preset : 0;
+    const std::wstring storage_id = display_storage_id(display);
+    const auto preference = gui.preferred_profile_ids.find(storage_id);
+    if (preference == gui.preferred_profile_ids.end()) {
+        // First visit to this display: keep the current profile and remember the
+        // association without overwriting the display's committed calibration.
+        gui.preferred_profile_ids[storage_id] = gui.profiles[fallback_index].id;
+        persist_profile_preferences(gui);
+        return true;
+    }
+
+    std::size_t profile_index = fallback_index;
+    bool found = false;
+    for (std::size_t i = 0; i < gui.profiles.size(); ++i) {
+        if (gui.profiles[i].id == preference->second) {
+            profile_index = i;
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        gui.preferred_profile_ids.erase(preference);
+        gui.preferred_profile_ids[storage_id] = gui.profiles[fallback_index].id;
+        persist_profile_preferences(gui);
+        return true;
+    }
+
+    const std::size_t previous_preset = gui.active_preset;
+    const GammaParams previous_params = params_from_sliders(gui);
+    const CalibrationSettings previous_committed = gui.session.committed_settings;
+
+    gui.active_preset = profile_index;
+    const GammaParams profile_params = gui.profiles[profile_index].settings;
+    set_params_to_controls(gui, profile_params);
+    std::wstring error;
+    if (!gui.controller.apply_and_save(display, profile_params, error)) {
+        gui.active_preset = previous_preset;
+        set_params_to_controls(gui, previous_params);
+        gui.session.committed_settings = previous_committed;
+        refresh_preset_buttons(gui);
+        set_status(gui, L"Could not apply the preferred profile: " + error,
+                   StatusTone::error);
+        return false;
+    }
+
+    gui.session.committed_settings = profile_params;
+    gui.session.dirty = false;
+    gui.session.profile_switch_undo_available = false;
+    gui.session.undo_display_id.clear();
+    KillTimer(gui.window, kAutoSaveTimer);
+    SetWindowTextW(gui.apply_button, L"Saved");
+    EnableWindow(gui.apply_button, FALSE);
+    EnableWindow(gui.before_after_button, FALSE);
+    refresh_preset_buttons(gui);
+    return true;
+}
+
+bool load_selected_profile(GuiState& gui) {
     const int index = selected_display_index(gui);
-    if (index < 0 || index >= static_cast<int>(gui.displays.size())) return;
+    if (index < 0 || index >= static_cast<int>(gui.displays.size())) return false;
+    const int previous_display_index = gui.active_display_index;
     if (gui.active_display_index != index) {
         // Undo snapshots are display-scoped: switching displays invalidates them
         // so Ctrl+Z can never apply one display's adjustments to another.
@@ -328,6 +415,12 @@ void load_selected_profile(GuiState& gui) {
     SetWindowTextW(gui.apply_button, L"Saved");
     EnableWindow(gui.apply_button, FALSE);
     EnableWindow(gui.before_after_button, FALSE);
+    // Apply the remembered profile only for a real display switch. Refreshing
+    // the same display keeps the current calibration intact.
+    if (previous_display_index != index) {
+        return apply_preferred_profile_to_display(gui, gui.displays[index]);
+    }
+    return true;
 }
 
 const DisplayInfo* selected_display(const GuiState& gui) {
@@ -462,24 +555,30 @@ void refresh_displays(GuiState& gui) {
             gui.session.profile_switch_undo_available = false;
             gui.session.undo_display_id.clear();
         }
-        load_selected_profile(gui);
+        const bool loaded = load_selected_profile(gui);
         const std::wstring selected_id = display_storage_id(gui.displays[selected]);
-        const auto pending = gui.pending_adjustments.find(selected_id);
-        if (pending != gui.pending_adjustments.end()) {
-            std::wstring error;
-            if (gui.controller.reapply_committed(gui.displays[selected], pending->second, error)) {
-                gui.session.committed_settings = pending->second;
-                set_params_to_controls(gui, pending->second);
-                gui.pending_adjustments.erase(pending);
-                log_message(LogLevel::info, L"Pending calibration applied to " + selected_id);
-            } else {
-                log_message(LogLevel::warning, L"Pending calibration remains queued for " +
-                                               selected_id + L": " + error);
+        if (loaded) {
+            const auto pending = gui.pending_adjustments.find(selected_id);
+            if (pending != gui.pending_adjustments.end()) {
+                std::wstring error;
+                if (gui.controller.reapply_committed(gui.displays[selected], pending->second,
+                                                     error)) {
+                    gui.session.committed_settings = pending->second;
+                    set_params_to_controls(gui, pending->second);
+                    gui.pending_adjustments.erase(pending);
+                    log_message(LogLevel::info, L"Pending calibration applied to " + selected_id);
+                } else {
+                    log_message(LogLevel::warning, L"Pending calibration remains queued for " +
+                                                   selected_id + L": " + error);
+                }
             }
         }
         const std::wstring metadata = display_metadata(gui.displays[selected]);
         set_display_status(gui, metadata);
-        if (gui.displays[selected].hdr_active) {
+        if (!loaded) {
+            log_message(LogLevel::warning,
+                        L"Display selected but the preferred profile could not be applied");
+        } else if (gui.displays[selected].hdr_active) {
             set_status(gui, L"HDR is active; Windows or the GPU may limit Gamma adjustments",
                        StatusTone::warning);
         } else {

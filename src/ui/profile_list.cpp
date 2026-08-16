@@ -259,6 +259,7 @@ void select_preset(GuiState& gui, std::size_t index) {
     EnableWindow(gui.apply_button, FALSE);
     EnableWindow(gui.before_after_button, FALSE);
     refresh_preset_buttons(gui);
+    remember_active_profile_for_display(gui, *display);
     set_status(gui, gui.profiles[index].name + L" applied  |  Ctrl+Z to go back",
                StatusTone::success);
 }
@@ -322,6 +323,9 @@ void undo_profile_switch(GuiState& gui) {
     EnableWindow(gui.apply_button, FALSE);
     EnableWindow(gui.before_after_button, FALSE);
     refresh_preset_buttons(gui);
+    if (const auto* active_display = selected_display(gui)) {
+        remember_active_profile_for_display(gui, *active_display);
+    }
     set_status(gui, L"Previous profile adjustments restored", StatusTone::success);
 }
 
@@ -347,6 +351,7 @@ void delete_preset(GuiState& gui, std::size_t index) {
     }
     const auto previous = gui.profiles;
     const std::wstring deleted_name = gui.profiles[index].name;
+    const std::wstring deleted_id = gui.profiles[index].id;
     gui.profiles.erase(std::next(gui.profiles.begin(), static_cast<std::ptrdiff_t>(index)));
     if (!persist_presets(gui)) {
         gui.profiles = previous;
@@ -355,6 +360,17 @@ void delete_preset(GuiState& gui, std::size_t index) {
     }
     gui.active_preset =
         active_index_after_delete(gui.profiles.size(), index, gui.active_preset);
+    bool preferences_changed = false;
+    for (auto preference = gui.preferred_profile_ids.begin();
+         preference != gui.preferred_profile_ids.end();) {
+        if (preference->second == deleted_id) {
+            preference = gui.preferred_profile_ids.erase(preference);
+            preferences_changed = true;
+        } else {
+            ++preference;
+        }
+    }
+    if (preferences_changed) persist_profile_preferences(gui);
     if (gui.session.undo_preset >= gui.profiles.size()) gui.session.profile_switch_undo_available = false;
     scroll_profile_into_view(gui, gui.active_preset);
     refresh_preset_buttons(gui);

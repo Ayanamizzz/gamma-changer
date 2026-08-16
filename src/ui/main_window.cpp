@@ -99,6 +99,16 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         } else {
             current->profiles = current->profile_manager.profiles();
         }
+        current->preferred_profile_ids.clear();
+        for (const auto& preference : current->store.load_profile_preferences()) {
+            const bool known_profile = std::any_of(
+                current->profiles.begin(), current->profiles.end(),
+                [&](const Profile& profile) { return profile.id == preference.profile_id; });
+            if (known_profile) {
+                current->preferred_profile_ids[preference.display_id] =
+                    preference.profile_id;
+            }
+        }
         if (current->active_preset >= current->profiles.size()) current->active_preset = 0;
         current->profile_scroll_offset = 0;
         refresh_preset_buttons(*current);
@@ -288,12 +298,12 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                 select_display_item(*gui, gui->active_display_index);
                 return 0;
             }
-            load_selected_profile(*gui);
+            const bool loaded = load_selected_profile(*gui);
             const int index = selected_display_index(*gui);
             if (index >= 0 && index < static_cast<int>(gui->displays.size())) {
                 const std::wstring metadata = display_metadata(gui->displays[index]);
                 set_display_status(*gui, metadata);
-                set_status(*gui, L"Ready", StatusTone::success);
+                if (loaded) set_status(*gui, L"Ready", StatusTone::success);
             }
             return 0;
         }

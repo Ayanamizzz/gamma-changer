@@ -32,6 +32,11 @@ public:
     ProfileLoadStatus load_profiles(std::vector<Profile>& profiles) const;
     bool save_profiles(const std::vector<Profile>& profiles, std::wstring& error) const;
 
+    std::vector<DisplayProfilePreference> load_profile_preferences() const;
+    bool save_profile_preferences(
+        const std::vector<DisplayProfilePreference>& preferences,
+        std::wstring& error) const;
+
     bool load_base_ramp(const std::wstring& display_id, GammaRamp& ramp) const;
     bool save_base_ramp(const std::wstring& display_id, const GammaRamp& ramp, std::wstring& error) const;
 
@@ -40,6 +45,7 @@ private:
     std::filesystem::path params_path(const std::wstring& display_id) const;
     std::filesystem::path ramp_path(const std::wstring& display_id) const;
     std::filesystem::path profiles_path() const;
+    std::filesystem::path profile_preferences_path() const;
 };
 
 }  // namespace gamma_changer

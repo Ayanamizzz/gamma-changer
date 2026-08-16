@@ -322,6 +322,30 @@ bool check_store() {
                      loaded_profiles[0].name == unicode_name,
                  L"profiles with Chinese names must round-trip");
 
+    const std::vector<DisplayProfilePreference> preferences{
+        {L"display-a", L"unicode-id"},
+        {L"\x663e\x793a\x5668", L"unicode-id"},
+    };
+    error.clear();
+    ok &= expect(store.save_profile_preferences(preferences, error),
+                 L"display profile preferences must save");
+    const auto loaded_preferences = store.load_profile_preferences();
+    ok &= expect(loaded_preferences.size() == 2 &&
+                     loaded_preferences[0].display_id == L"display-a" &&
+                     loaded_preferences[0].profile_id == L"unicode-id" &&
+                     loaded_preferences[1].display_id == L"\x663e\x793a\x5668",
+                 L"display profile preferences must round-trip");
+
+    {
+        std::vector<DisplayProfilePreference> duplicate = preferences;
+        duplicate.push_back(preferences.front());
+        error.clear();
+        ok &= expect(!store.save_profile_preferences(duplicate, error),
+                     L"duplicate display profile preferences must be rejected");
+        ok &= expect(store.load_profile_preferences().size() == 2,
+                     L"rejected preference writes must leave the previous file intact");
+    }
+
     {
         std::wofstream output(temporary.path / L"profiles.v1", std::ios::trunc);
         output << L"GammaChangerProfiles 1\n"

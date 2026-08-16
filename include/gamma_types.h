@@ -51,6 +51,11 @@ struct Profile {
     bool saved = false;
 };
 
+struct DisplayProfilePreference {
+    std::wstring display_id;
+    std::wstring profile_id;
+};
+
 struct GammaRamp {
     std::array<std::array<std::uint16_t, kRampSize>, 3> channel{};
 };

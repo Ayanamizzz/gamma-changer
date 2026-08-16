@@ -2,7 +2,7 @@
 
 Gamma Changer is a native Windows desktop utility for adjusting the software gamma ramp of
 each connected display. It provides a modern, high-DPI Win32 interface with per-monitor
-settings, four reusable profiles, direct numeric input, and a live tone-response preview.
+settings, a scrollable profile list, direct numeric input, and a live tone-response preview.
 
 Current version: **2.4.0**
 
@@ -13,7 +13,8 @@ Current version: **2.4.0**
 - Supports sliders and precise numeric entry with immediate visual feedback.
 - Shows the reference and adjusted tone-response curves.
 - Provides a scrollable list of persistent, renameable profiles with no four-slot limit.
-- Automatically saves changes after a short delay without interrupting profile switching.
+- Remembers the preferred profile for each display and applies it when switching displays.
+- Automatically saves changes 0.7 seconds after the last adjustment (Live Preview + Auto-Save).
 - Preserves settings by stable display identity across refreshes and hot-plug events.
 - Reapplies saved calibration after display topology changes and system resume.
 - Supports Start with Windows, single-instance activation, and system tray controls.
@@ -70,8 +71,9 @@ Launch the graphical application:
 .\build\vs2022-x64\Release\gamma_changer_gui.exe
 ```
 
-Choose a display, then adjust the values with the sliders or numeric fields. Changes are applied
-and saved automatically. Use **Restore defaults** to return the selected display to a neutral LUT.
+Choose a display, then adjust the values with the sliders or numeric fields. Changes are
+previewed live and saved automatically after a 0.7-second debounce. Use **Restore defaults** to
+return the selected display to a neutral LUT.
 
 - Minimizing the window keeps the application available in the system tray.
 - Left-clicking the tray icon restores the window.

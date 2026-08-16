@@ -64,6 +64,7 @@ bool apply_profile_from_tray(GuiState& gui, std::size_t index) {
     EnableWindow(gui.apply_button, FALSE);
     EnableWindow(gui.before_after_button, FALSE);
     refresh_preset_buttons(gui);
+    remember_active_profile_for_display(gui, *display);
     set_status(gui, gui.profiles[index].name + L" applied", StatusTone::success);
     log_message(LogLevel::info, L"Tray profile applied: " + gui.profiles[index].name);
     return true;
