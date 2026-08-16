@@ -69,11 +69,24 @@ jobs:
             "- SHA256SUMS.txt — checksums for the assets above",
             "- Source code archives are attached automatically by GitHub"
           ) | Set-Content -LiteralPath $notes -Encoding UTF8
-          gh release create $tag `
-            --repo $env:GITHUB_REPOSITORY `
-            --draft `
-            --title "Gamma Changer $tag" `
-            --notes-file $notes `
-            (Join-Path $env:RUNNER_TEMP $zip) `
-            (Join-Path $env:RUNNER_TEMP "gamma_changer_gui.exe") `
+          $assets = @(
+            (Join-Path $env:RUNNER_TEMP $zip),
+            (Join-Path $env:RUNNER_TEMP "gamma_changer_gui.exe"),
             (Join-Path $env:RUNNER_TEMP "SHA256SUMS.txt")
+          )
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $assets --repo $env:GITHUB_REPOSITORY --clobber
+            gh release edit $tag `
+              --repo $env:GITHUB_REPOSITORY `
+              --title "Gamma Changer $tag" `
+              --notes-file $notes `
+              --draft
+          } else {
+            gh release create $tag `
+              --repo $env:GITHUB_REPOSITORY `
+              --draft `
+              --title "Gamma Changer $tag" `
+              --notes-file $notes `
+              $assets
+          }
