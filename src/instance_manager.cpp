@@ -1,10 +1,16 @@
 #include "instance_manager.h"
 
+#include "logger.h"
+
 namespace gamma_changer {
 
 SingleInstanceLock::SingleInstanceLock() {
     mutex_ = CreateMutexW(nullptr, FALSE, L"Local\\GammaChangerCpp.Gui.v2");
     primary_ = mutex_ != nullptr && GetLastError() != ERROR_ALREADY_EXISTS;
+    if (mutex_ == nullptr) {
+        log_message(LogLevel::error,
+                    L"Could not create the single-instance mutex; the application will exit");
+    }
 }
 
 SingleInstanceLock::~SingleInstanceLock() {

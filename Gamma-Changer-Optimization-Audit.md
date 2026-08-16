@@ -396,3 +396,52 @@ previewSettings           <--- slider edits update this
 
 下一步建议执行 **Batch 1 — Safety boundary**。它不会改变现有 UI 外观，能先把最危险的文件损坏、
 非法参数和错误状态问题消除，为后续 Preview/Committed 重构提供安全基线。
+
+## 7. Follow-up remediation status（2026-08-16）
+
+后续迭代已修复本报告中的主要问题，并补充回归测试：
+
+- 未配置显示器不再被写入默认 LUT（reapply 前检查已保存配置）。
+- CLI reset 支持 legacy device-name base-ramp 回退与迁移。
+- profiles.v1 保存拒绝空集合与重复 ID；presets.profile 采用严格逐行解析。
+- 显示器刷新失败会中止流程；undo 绑定显示器身份；Reset 不再改写 profile 定义。
+- ProfileStore 写操作增加跨进程命名互斥；解析文件增加规模上限。
+- 日志轮转失败会截断，跨进程日志写入加锁。
+- 修复 rename 编辑框隐藏创建导致的同级 Z 序遮挡问题。
+- 清理死代码与死枚举，补齐 SAL/空指针/整数溢出防护与关键 Win32 返回值检查。
+- Release/Debug 构建零 `/W4` 警告，CTest 3/3 通过，`/analyze` 仅剩测试程序栈大小提示。
+
+第二轮修复（同日）：
+
+- 刷新流程先恢复 preview、再保存 pending；恢复失败即中止，避免“UI 已提交、屏幕仍预览”。
+- profiles.v1 损坏时回退为只读展示 legacy presets，不再显示空 profile 列表。
+- 长显示器 ID 文件名改用稳定的 FNV-1a 哈希，替代 `std::hash`。
+- `save_presets` 写入前校验 occupied 槽参数，保持 save/load 契约一致。
+- 显示器枚举对 `QueryDisplayConfig` 缓冲区竞争重试一次，并把 adapter 元数据改为一次枚举、O(1) 查询。
+- CLI 拒绝未知选项，`apply` 要求至少一个调整项。
+- `LutGenerator::generate` 对非法/非有限参数进行防御性 sanitize。
+- `LOCALAPPDATA` 缺失时回退到 temp 目录且不再抛出；测试临时目录错误改为显式异常。
+- 自绘 profile 文本缓冲扩大到 128 并省略号显示。
+- 构建脚本以脚本所在目录为项目根目录；CI 开启 `/WX`。
+
+第三轮修复（同日）：
+
+- 统一 `local_app_data()` 返回基础目录，修复 fallback 分支 `GammaChangerCpp` 双重拼接。
+- 日志 temp/cwd fallback 现在会创建 `GammaChangerCpp` 目录。
+- profiles.v1 损坏时仍允许保存 per-display 校准（profile 集合保持只读）。
+- 长名 FNV 文件增加旧 `std::hash` 名称回退读取，避免开发期数据孤儿化。
+- `StoreWriteLock`/`LogWriteLock` 正确处理 `WaitForSingleObject` 返回值，避免失败时错误释放 mutex。
+- `save_presets` 拒绝超过 64 字符的 profile 名。
+- 多流 adapter 不再使用不确定的第一个物理显示器名作为 fallback。
+- README 补充 CLI `apply` 至少需要一个调整项、未知选项会被拒绝。
+
+第四轮（按产品决定）：
+
+- 移除 CLI 目标与 `src/main.cpp`，不再生成 `gamma_changer.exe`。
+- 使用桌面提供的 PNG 生成多尺寸 `assets/app.ico`（16/24/32/48/64/128/256），并嵌入 GUI 资源，窗口类与托盘图标改用应用图标。
+- README、完成报告同步移除 CLI 描述。
+- rename 改为“隐藏目标按钮、编辑框独占其矩形”的内联编辑方案，彻底消除自绘按钮/双缓冲父窗口造成的同级遮挡与渲染错位。
+- rename 的 Enter/Escape/失焦现在同步提交，并在主消息循环中先于 `IsDialogMessage` 处理 Enter/Escape，确保用户按 Enter 或点击其他区域都会保存并退出编辑模式。
+- rename 编辑框与 profile 按钮几何完全重合：同样尺寸、同样的 6px 圆角，左/右 14px 文本缩进与按钮文字对齐。
+- Profile 列表升级为真正的动态集合：New 创建带默认参数的全新 profile，Delete 从 `profiles.v1` 中永久删除，不再受 4 槽限制；侧栏支持滚轮滚动，存储上限提高到 1024 个 profile。
+- 修复删除 profile 后的 active 索引语义；移除 F2/双击重命名入口（仅保留右键菜单 Rename）；内置 Default 禁止重命名；滚轮命中范围限定为 profile 列表区域并绘制可视滚动条。

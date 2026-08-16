@@ -21,6 +21,10 @@ public:
     bool update_legacy_slots(const std::array<PresetSlot, kPresetCount>& slots,
                              std::wstring& error);
 
+    // Replaces the whole profile collection atomically. The GUI keeps its own
+    // working copy and uses this only as a validated persist boundary.
+    bool replace_profiles(const std::vector<Profile>& profiles, std::wstring& error);
+
 private:
     void migrate_legacy_slots();
     Profile* find_profile(const std::wstring& id);

@@ -56,6 +56,11 @@ StartupState startup_state(std::wstring& error) {
         error = L"The Gamma Changer startup entry is invalid";
         return StartupState::unavailable;
     }
+    if (bytes > 64 * 1024 || bytes % sizeof(wchar_t) != 0) {
+        RegCloseKey(key);
+        error = L"The Gamma Changer startup entry is unreasonably large";
+        return StartupState::unavailable;
+    }
     std::vector<wchar_t> value(bytes / sizeof(wchar_t) + 1, L'\0');
     result = RegQueryValueExW(key, kApplicationName, nullptr, &type,
                               reinterpret_cast<BYTE*>(value.data()), &bytes);

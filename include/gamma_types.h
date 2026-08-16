@@ -34,8 +34,8 @@ struct CalibrationSettings {
     double b_gain = 1.0;
 };
 
-// Transitional alias: existing configuration files, CLI arguments and UI code
-// keep their current behavior while the application moves to the calibration model.
+// Transitional alias: existing configuration files and UI code keep their
+// current behavior while the application moves to the calibration model.
 using GammaParams = CalibrationSettings;
 
 struct PresetSlot {
@@ -66,5 +66,12 @@ struct DisplayInfo {
     bool primary = false;
     bool hdr_active = false;
 };
+
+// Single storage identity used by profile, ramp, and undo code. Prefer the
+// stable monitor path and fall back to the GDI device name only when Windows
+// does not expose a stable path.
+inline std::wstring display_storage_id(const DisplayInfo& display) {
+    return display.stable_id.empty() ? display.device_name : display.stable_id;
+}
 
 }  // namespace gamma_changer

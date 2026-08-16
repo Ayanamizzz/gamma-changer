@@ -5,6 +5,7 @@
 #include <wincodec.h>
 
 #include <algorithm>
+#include <cstdint>
 
 namespace gamma_changer::ui {
 namespace {
@@ -13,6 +14,15 @@ template <typename T>
 void release_com(T*& object) {
     if (object) object->Release();
     object = nullptr;
+}
+
+constexpr UINT kMaxImageDimension = 16384;
+constexpr std::uint64_t kMaxImageBytes = 512ull * 1024 * 1024;
+
+bool valid_image_size(UINT width, UINT height) {
+    return width > 0 && height > 0 &&
+           width <= kMaxImageDimension && height <= kMaxImageDimension &&
+           static_cast<std::uint64_t>(width) * height * 4 <= kMaxImageBytes;
 }
 
 }  // namespace
@@ -60,23 +70,27 @@ bool BackgroundRenderer::load(const std::filesystem::path& path) {
         UINT width = 0;
         UINT height = 0;
         converter->GetSize(&width, &height);
-        BITMAPINFO info{};
-        info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        info.bmiHeader.biWidth = static_cast<LONG>(width);
-        info.bmiHeader.biHeight = -static_cast<LONG>(height);
-        info.bmiHeader.biPlanes = 1;
-        info.bmiHeader.biBitCount = 32;
-        info.bmiHeader.biCompression = BI_RGB;
-        void* pixels = nullptr;
-        HDC screen = GetDC(nullptr);
-        bitmap_ = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
-        ReleaseDC(nullptr, screen);
-        if (bitmap_ && pixels && SUCCEEDED(converter->CopyPixels(
-                                     nullptr, width * 4, width * height * 4,
-                                     static_cast<BYTE*>(pixels)))) {
-            width_ = static_cast<int>(width);
-            height_ = static_cast<int>(height);
-            loaded = true;
+        if (valid_image_size(width, height)) {
+            const UINT stride = width * 4;
+            const std::uint64_t bytes = static_cast<std::uint64_t>(width) * height * 4;
+            BITMAPINFO info{};
+            info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            info.bmiHeader.biWidth = static_cast<LONG>(width);
+            info.bmiHeader.biHeight = -static_cast<LONG>(height);
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            info.bmiHeader.biCompression = BI_RGB;
+            void* pixels = nullptr;
+            HDC screen = GetDC(nullptr);
+            bitmap_ = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+            ReleaseDC(nullptr, screen);
+            if (bitmap_ && pixels && SUCCEEDED(converter->CopyPixels(
+                                         nullptr, stride, static_cast<UINT>(bytes),
+                                         static_cast<BYTE*>(pixels)))) {
+                width_ = static_cast<int>(width);
+                height_ = static_cast<int>(height);
+                loaded = true;
+            }
         }
     }
 
@@ -96,9 +110,10 @@ bool BackgroundRenderer::load_resource(HINSTANCE instance, int resource_id) {
     HRSRC resource = FindResourceW(instance, MAKEINTRESOURCEW(resource_id), RT_RCDATA);
     if (!resource) return false;
     HGLOBAL loaded_resource = LoadResource(instance, resource);
+    if (!loaded_resource) return false;
     const DWORD resource_size = SizeofResource(instance, resource);
     const void* resource_data = LockResource(loaded_resource);
-    if (!loaded_resource || !resource_data || resource_size == 0) return false;
+    if (!resource_data || resource_size == 0) return false;
 
     IWICImagingFactory* factory = nullptr;
     IWICStream* stream = nullptr;
@@ -122,27 +137,31 @@ bool BackgroundRenderer::load_resource(HINSTANCE instance, int resource_id) {
         UINT width = 0;
         UINT height = 0;
         converter->GetSize(&width, &height);
-        BITMAPINFO info{};
-        info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        info.bmiHeader.biWidth = static_cast<LONG>(width);
-        info.bmiHeader.biHeight = -static_cast<LONG>(height);
-        info.bmiHeader.biPlanes = 1;
-        info.bmiHeader.biBitCount = 32;
-        info.bmiHeader.biCompression = BI_RGB;
-        void* pixels = nullptr;
-        HDC screen = GetDC(nullptr);
-        HBITMAP decoded = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
-        ReleaseDC(nullptr, screen);
-        if (decoded && pixels && SUCCEEDED(converter->CopyPixels(
-                                    nullptr, width * 4, width * height * 4,
-                                    static_cast<BYTE*>(pixels)))) {
-            if (bitmap_) DeleteObject(bitmap_);
-            bitmap_ = decoded;
-            width_ = static_cast<int>(width);
-            height_ = static_cast<int>(height);
-            loaded = true;
-        } else if (decoded) {
-            DeleteObject(decoded);
+        if (valid_image_size(width, height)) {
+            const UINT stride = width * 4;
+            const std::uint64_t bytes = static_cast<std::uint64_t>(width) * height * 4;
+            BITMAPINFO info{};
+            info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            info.bmiHeader.biWidth = static_cast<LONG>(width);
+            info.bmiHeader.biHeight = -static_cast<LONG>(height);
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            info.bmiHeader.biCompression = BI_RGB;
+            void* pixels = nullptr;
+            HDC screen = GetDC(nullptr);
+            HBITMAP decoded = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+            ReleaseDC(nullptr, screen);
+            if (decoded && pixels && SUCCEEDED(converter->CopyPixels(
+                                        nullptr, stride, static_cast<UINT>(bytes),
+                                        static_cast<BYTE*>(pixels)))) {
+                if (bitmap_) DeleteObject(bitmap_);
+                bitmap_ = decoded;
+                width_ = static_cast<int>(width);
+                height_ = static_cast<int>(height);
+                loaded = true;
+            } else if (decoded) {
+                DeleteObject(decoded);
+            }
         }
     }
 

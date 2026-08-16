@@ -12,7 +12,7 @@ Current version: **2.3.2**
 - Adjusts Gamma, Brightness, Contrast, and individual Red/Green/Blue gain.
 - Supports sliders and precise numeric entry with immediate visual feedback.
 - Shows the reference and adjusted tone-response curves.
-- Provides four persistent, renameable profile slots.
+- Provides a scrollable list of persistent, renameable profiles with no four-slot limit.
 - Automatically saves changes after a short delay without interrupting profile switching.
 - Preserves settings by stable display identity across refreshes and hot-plug events.
 - Reapplies saved calibration after display topology changes and system resume.
@@ -44,8 +44,8 @@ The simplest build command is:
 .\build-release.bat
 ```
 
-The script uses the CMake installation bundled with Visual Studio Build Tools. The GUI binary
-is written to:
+The script uses the CMake installation bundled with Visual Studio Build Tools, builds the GUI
+and all automated checks, then runs the Release test suite. The GUI binary is written to:
 
 ```text
 build\vs2022-x64\Release\gamma_changer_gui.exe
@@ -56,12 +56,7 @@ You can also use CMake directly:
 ```powershell
 cmake --preset vs2022-x64
 cmake --build build\vs2022-x64 --config Release
-```
-
-Run the automated checks with:
-
-```powershell
-ctest --test-dir build\vs2022-x64 -C Release --output-on-failure
+ctest --preset release
 ```
 
 If the linker reports `LNK1104` for `gamma_changer_gui.exe`, close the running application
@@ -83,25 +78,6 @@ and saved automatically. Use **Restore defaults** to return the selected display
 - Right-clicking the tray icon provides profile switching, Show Window, and Exit commands.
 - Closing the main window exits the application completely.
 
-### Command line
-
-```powershell
-gamma_changer.exe list
-
-gamma_changer.exe apply `
-  --display "\\.\DISPLAY1" `
-  --gamma 1.15 `
-  --brightness -0.05 `
-  --contrast 1.05 `
-  --r-gain 1.00 `
-  --g-gain 1.00 `
-  --b-gain 1.00
-
-gamma_changer.exe reset --display "\\.\DISPLAY1"
-```
-
-Use `gamma_changer.exe list` to obtain the Windows display identifiers accepted by `--display`.
-
 ## Local data
 
 Profiles, per-display settings, captured base ramps, and diagnostic logs are stored locally under:
@@ -115,11 +91,11 @@ The application does not require an online service to adjust displays or store p
 ## Project structure
 
 ```text
-assets/    Embedded wallpaper and visual resources
-include/   Application, display, calibration, profile, and UI headers
-src/       Win32 GUI, CLI, calibration core, persistence, and checks
+assets/       Embedded wallpaper, application icon, and visual resources
+include/      Application, display, calibration, profile, and UI headers
+src/          Calibration core, application services, persistence, and checks
+src/ui/       Win32 UI modules (window, controls, layout, painting, profiles, tray)
 ```
 
-The core calibration logic is shared by the GUI and CLI. Display-ramp access is isolated behind
-`DisplayRampBackend`, allowing transaction and rollback behavior to be tested without modifying a
-real monitor.
+Display-ramp access is isolated behind `DisplayRampBackend`, allowing transaction and rollback
+behavior to be tested without modifying a real monitor.

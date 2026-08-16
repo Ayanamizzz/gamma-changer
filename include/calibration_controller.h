@@ -14,16 +14,13 @@ enum class CommitStatus {
     success,
     rolled_back,
     rollback_failed,
-    deferred_offline,
 };
 
 struct CommitResult {
     CommitStatus status = CommitStatus::success;
     std::wstring error;
 
-    bool succeeded() const {
-        return status == CommitStatus::success || status == CommitStatus::deferred_offline;
-    }
+    bool succeeded() const { return status == CommitStatus::success; }
 };
 
 // Coordinates the calibration use-cases without exposing Windows gamma-ramp
@@ -34,11 +31,11 @@ public:
     CalibrationController(ProfileStore& store, DisplayRampBackend& ramp_backend);
 
     CalibrationSettings load_settings(const DisplayInfo& display) const;
+    bool has_saved_settings(const DisplayInfo& display) const;
 
     bool preview(const DisplayInfo& display, const CalibrationSettings& settings,
                  std::wstring& error);
     bool cancel_preview(const DisplayInfo& display, std::wstring& error);
-    void abandon_preview();
     bool apply_and_save(const DisplayInfo& display, const CalibrationSettings& settings,
                         std::wstring& error);
     CommitResult commit(const DisplayInfo& display, const CalibrationSettings& settings);

@@ -1,5 +1,6 @@
 #include "gamma_lut.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -19,6 +20,11 @@ std::uint16_t to_u16(double value) {
 
 bool in_range(double value, const CalibrationRange& range) {
     return std::isfinite(value) && value >= range.minimum && value <= range.maximum;
+}
+
+double sanitize_value(double value, const CalibrationRange& range) {
+    if (!std::isfinite(value)) return range.default_value;
+    return std::clamp(value, range.minimum, range.maximum);
 }
 
 }  // namespace
@@ -60,11 +66,22 @@ bool LutGenerator::validate(const CalibrationSettings& params, std::wstring& err
 }
 
 GammaRamp LutGenerator::generate(const CalibrationSettings& params) const {
+    // generate() is a public building block: defensively clamp non-finite or
+    // out-of-range values so a missing validate() call can never produce a
+    // pathological LUT. Callers that need error reporting use validate() first.
+    const CalibrationSettings safe{
+        sanitize_value(params.gamma, calibration_ranges::gamma),
+        sanitize_value(params.brightness, calibration_ranges::brightness),
+        sanitize_value(params.contrast, calibration_ranges::contrast),
+        sanitize_value(params.r_gain, calibration_ranges::gain),
+        sanitize_value(params.g_gain, calibration_ranges::gain),
+        sanitize_value(params.b_gain, calibration_ranges::gain),
+    };
     GammaRamp ramp{};
-    const double inverse_gamma = 1.0 / params.gamma;
+    const double inverse_gamma = 1.0 / safe.gamma;
 
     auto transform = [&](double x, double gain) {
-        double y = (x - 0.5) * params.contrast + 0.5 + params.brightness;
+        double y = (x - 0.5) * safe.contrast + 0.5 + safe.brightness;
         y = clamp01(y);
         y = std::pow(y, inverse_gamma);
         return clamp01(y * gain);
@@ -72,9 +89,9 @@ GammaRamp LutGenerator::generate(const CalibrationSettings& params) const {
 
     for (std::size_t i = 0; i < kRampSize; ++i) {
         const double x = static_cast<double>(i) / static_cast<double>(kRampSize - 1);
-        ramp.channel[0][i] = to_u16(transform(x, params.r_gain));
-        ramp.channel[1][i] = to_u16(transform(x, params.g_gain));
-        ramp.channel[2][i] = to_u16(transform(x, params.b_gain));
+        ramp.channel[0][i] = to_u16(transform(x, safe.r_gain));
+        ramp.channel[1][i] = to_u16(transform(x, safe.g_gain));
+        ramp.channel[2][i] = to_u16(transform(x, safe.b_gain));
     }
     return ramp;
 }

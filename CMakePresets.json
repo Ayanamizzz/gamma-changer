@@ -27,13 +27,6 @@
       "targets": ["gamma_changer_gui"]
     },
     {
-      "name": "release-cli",
-      "displayName": "Release - CLI",
-      "configurePreset": "vs2022-x64",
-      "configuration": "Release",
-      "targets": ["gamma_changer"]
-    },
-    {
       "name": "release-profile-check",
       "displayName": "Release - Profile migration check",
       "configurePreset": "vs2022-x64",
@@ -46,6 +39,33 @@
       "configurePreset": "vs2022-x64",
       "configuration": "Release",
       "targets": ["core_safety_check"]
+    },
+    {
+      "name": "release-checks",
+      "displayName": "Release - All checks",
+      "configurePreset": "vs2022-x64",
+      "configuration": "Release",
+      "targets": ["core_safety_check", "profile_migration_check", "calibration_transaction_check"]
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "release",
+      "displayName": "Release tests",
+      "configurePreset": "vs2022-x64",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug tests",
+      "configurePreset": "vs2022-x64",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
     }
   ]
 }

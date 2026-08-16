@@ -91,6 +91,13 @@ std::array<PresetSlot, kPresetCount> ProfileManager::legacy_slots() const {
     return slots;
 }
 
+bool ProfileManager::replace_profiles(const std::vector<Profile>& profiles,
+                                      std::wstring& error) {
+    if (!store_.save_profiles(profiles, error)) return false;
+    profiles_ = profiles;
+    return true;
+}
+
 bool ProfileManager::update_legacy_slots(
     const std::array<PresetSlot, kPresetCount>& slots, std::wstring& error) {
     const std::vector<Profile> previous_profiles = profiles_;

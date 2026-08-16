@@ -3,13 +3,6 @@
 #include "logger.h"
 
 namespace gamma_changer {
-namespace {
-
-const std::wstring& storage_id(const DisplayInfo& display) {
-    return display.stable_id.empty() ? display.device_name : display.stable_id;
-}
-
-}  // namespace
 
 CalibrationController::CalibrationController(ProfileStore& store)
     : CalibrationController(store, system_display_ramp_backend()) {}
@@ -20,7 +13,7 @@ CalibrationController::CalibrationController(ProfileStore& store,
 
 CalibrationSettings CalibrationController::load_settings(const DisplayInfo& display) const {
     CalibrationSettings settings;
-    if (store_.try_load_params(storage_id(display), settings)) return settings;
+    if (store_.try_load_params(display_storage_id(display), settings)) return settings;
     if (!display.stable_id.empty() && display.stable_id != display.device_name &&
         store_.try_load_params(display.device_name, settings)) {
         return settings;
@@ -28,9 +21,19 @@ CalibrationSettings CalibrationController::load_settings(const DisplayInfo& disp
     return default_params();
 }
 
+bool CalibrationController::has_saved_settings(const DisplayInfo& display) const {
+    CalibrationSettings settings;
+    if (store_.try_load_params(display_storage_id(display), settings)) return true;
+    if (!display.stable_id.empty() && display.stable_id != display.device_name &&
+        store_.try_load_params(display.device_name, settings)) {
+        return true;
+    }
+    return false;
+}
+
 bool CalibrationController::ensure_original_ramp(const DisplayInfo& display,
                                                   std::wstring& error) {
-    const std::wstring id = storage_id(display);
+    const std::wstring id = display_storage_id(display);
     if (captured_base_ramps_.find(id) != captured_base_ramps_.end()) return true;
     GammaRamp original;
     if (store_.load_base_ramp(id, original)) {
@@ -82,11 +85,6 @@ bool CalibrationController::cancel_preview(const DisplayInfo& display,
     return true;
 }
 
-void CalibrationController::abandon_preview() {
-    preview_active_ = false;
-    preview_display_id_.clear();
-}
-
 bool CalibrationController::apply_and_save(const DisplayInfo& display,
                                            const CalibrationSettings& settings,
                                            std::wstring& error) {
@@ -115,7 +113,7 @@ CommitResult CalibrationController::commit(const DisplayInfo& display,
     }
     CalibrationSettings previous_settings{};
     const bool had_previous_settings =
-        store_.try_load_params(storage_id(display), previous_settings);
+        store_.try_load_params(display_storage_id(display), previous_settings);
 
     const GammaRamp ramp = lut_generator_.generate(settings);
     std::wstring apply_error;
@@ -124,12 +122,12 @@ CommitResult CalibrationController::commit(const DisplayInfo& display,
     }
 
     std::wstring save_error;
-    if (!store_.save_params(storage_id(display), settings, save_error)) {
+    if (!store_.save_params(display_storage_id(display), settings, save_error)) {
         std::wstring rollback_error;
         const bool ramp_restored = ramp_backend_.write(display, previous_ramp, rollback_error);
         if (had_previous_settings) {
             std::wstring settings_rollback_error;
-            if (!store_.save_params(storage_id(display), previous_settings,
+            if (!store_.save_params(display_storage_id(display), previous_settings,
                                     settings_rollback_error)) {
                 if (!rollback_error.empty()) rollback_error += L"; ";
                 rollback_error += L"settings rollback failed: " + settings_rollback_error;
@@ -163,7 +161,7 @@ bool CalibrationController::save_for_offline_display(
     const DisplayInfo& display, const CalibrationSettings& settings,
     std::wstring& error) {
     if (!lut_generator_.validate(settings, error)) return false;
-    return store_.save_params(storage_id(display), settings, error);
+    return store_.save_params(display_storage_id(display), settings, error);
 }
 
 bool CalibrationController::reapply_committed(const DisplayInfo& display,
@@ -179,12 +177,25 @@ bool CalibrationController::reapply_committed(const DisplayInfo& display,
 bool CalibrationController::restore_original(const DisplayInfo& display,
                                              std::wstring& error) {
     GammaRamp original;
-    if (!store_.load_base_ramp(storage_id(display), original)) {
-        error = L"No saved base ramp for this display";
-        return false;
+    const std::wstring id = display_storage_id(display);
+    if (!store_.load_base_ramp(id, original)) {
+        if (!display.stable_id.empty() && display.stable_id != display.device_name &&
+            store_.load_base_ramp(display.device_name, original)) {
+            // Migrate the legacy device-name ramp to the stable identity so the
+            // next reset no longer depends on the legacy file.
+            std::wstring migration_error;
+            if (!store_.save_base_ramp(id, original, migration_error)) {
+                log_message(LogLevel::warning,
+                            L"Could not migrate the legacy base ramp for " +
+                                display.device_name + L": " + migration_error);
+            }
+        } else {
+            error = L"No saved base ramp for this display";
+            return false;
+        }
     }
     if (!ramp_backend_.write(display, original, error)) return false;
-    if (!store_.save_params(storage_id(display), default_params(), error)) return false;
+    if (!store_.save_params(id, default_params(), error)) return false;
     if (preview_active_ && preview_display_id_ == display.device_name) {
         preview_active_ = false;
         preview_display_id_.clear();

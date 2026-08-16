@@ -1,14 +1,20 @@
+#include "calibration_session.h"
 #include "gamma_lut.h"
+#include "profile_list_logic.h"
 #include "profile_manager.h"
 #include "profile_store.h"
 
 #include <windows.h>
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <iomanip>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 #include <string>
 
 using namespace gamma_changer;
@@ -25,7 +31,9 @@ struct TemporaryDirectory {
                (L"GammaChangerSafetyCheck-" + std::to_wstring(GetCurrentProcessId()));
         std::error_code ignored;
         std::filesystem::remove_all(path, ignored);
-        std::filesystem::create_directories(path);
+        std::error_code ec;
+        std::filesystem::create_directories(path, ec);
+        if (ec) throw std::runtime_error("could not create the safety-check temp directory");
     }
 
     ~TemporaryDirectory() {
@@ -79,6 +87,14 @@ bool check_validation() {
     ok &= expect(settings_equal(settings, default_params()), L"equal settings must compare equal");
     settings.gamma += 0.01;
     ok &= expect(!settings_equal(settings, default_params()), L"changed settings must compare unequal");
+
+    DisplayInfo display;
+    display.device_name = L"\\\\.\\DISPLAY1";
+    ok &= expect(display_storage_id(display) == display.device_name,
+                 L"storage identity must fall back to the GDI device name");
+    display.stable_id = L"stable-monitor-id";
+    ok &= expect(display_storage_id(display) == L"stable-monitor-id",
+                 L"storage identity must prefer the stable monitor id");
     return ok;
 }
 
@@ -93,6 +109,12 @@ bool check_lut() {
                          L"default LUT must be monotonic");
         }
     }
+
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    CalibrationSettings invalid{nan, nan, nan, nan, nan, nan};
+    const GammaRamp sanitized = build_ramp(invalid);
+    ok &= expect(sanitized.channel == build_ramp(default_params()).channel,
+                 L"LUT generation must defensively clamp invalid values to defaults");
     return ok;
 }
 
@@ -109,6 +131,32 @@ bool check_store() {
                  L"per-display settings must round-trip");
     ok &= expect(!std::filesystem::exists(temporary.path / L"stable-display.profile.tmp"),
                  L"successful settings save must not leave a temp file");
+
+    {
+        const std::wstring long_id(120, L'X');
+        std::wstring legacy = long_id;
+        for (auto& ch : legacy) {
+            if (ch == L'\\' || ch == L'/' || ch == L':' || ch == L'*' || ch == L'?' ||
+                ch == L'"' || ch == L'<' || ch == L'>' || ch == L'|') {
+                ch = L'_';
+            }
+        }
+        const std::size_t legacy_hash = std::hash<std::wstring>{}(long_id);
+        if (legacy.size() > 80) {
+            legacy.resize(80);
+            legacy += L"-" + std::to_wstring(legacy_hash);
+        }
+        std::wofstream output(temporary.path / (legacy + L".profile"), std::ios::trunc);
+        output << std::setprecision(17)
+               << L"gamma " << settings.gamma << L'\n'
+               << L"brightness " << settings.brightness << L'\n'
+               << L"contrast " << settings.contrast << L'\n'
+               << L"r_gain " << settings.r_gain << L'\n'
+               << L"g_gain " << settings.g_gain << L'\n'
+               << L"b_gain " << settings.b_gain << L'\n';
+    }
+    ok &= expect(same_settings(store.load_params(std::wstring(120, L'X')), settings),
+                 L"legacy std::hash long-name settings must remain readable");
 
     {
         std::wofstream output(temporary.path / L"partial.profile", std::ios::trunc);
@@ -166,6 +214,56 @@ bool check_store() {
                      same_settings(loaded_presets[0].params, settings),
                  L"legacy presets must round-trip");
 
+    {
+        std::array<PresetSlot, kPresetCount> invalid_presets{};
+        CalibrationSettings invalid_settings = settings;
+        invalid_settings.gamma = 99.0;
+        invalid_presets[0] = {true, L"Broken", invalid_settings};
+        error.clear();
+        ok &= expect(!store.save_presets(invalid_presets, error),
+                     L"save_presets must reject out-of-range occupied slots");
+        ok &= expect(store.load_presets()[0].name == L"Test Profile",
+                     L"rejected preset writes must leave the previous file intact");
+    }
+    {
+        std::array<PresetSlot, kPresetCount> long_name_presets{};
+        long_name_presets[0] = {true, std::wstring(65, L'X'), settings};
+        error.clear();
+        ok &= expect(!store.save_presets(long_name_presets, error),
+                     L"save_presets must reject overlong profile names");
+    }
+
+    const auto empty_presets = [&] {
+        const auto parsed = store.load_presets();
+        return std::none_of(parsed.begin(), parsed.end(),
+                            [](const PresetSlot& slot) { return slot.occupied; });
+    };
+    {
+        std::wofstream output(temporary.path / L"presets.profile", std::ios::trunc);
+        output << L"0 2 \"Bad\" 1 0 1 1 1 1\n";
+    }
+    ok &= expect(empty_presets(), L"presets with occupied values other than 0/1 must be rejected");
+    {
+        std::wofstream output(temporary.path / L"presets.profile", std::ios::trunc);
+        output << L"0 1 \"A\" 1 0 1 1 1 1\n"
+                  L"0 1 \"B\" 1 0 1 1 1 1\n";
+    }
+    ok &= expect(empty_presets(), L"duplicate preset rows must be rejected");
+    {
+        std::wofstream output(temporary.path / L"presets.profile", std::ios::trunc);
+        output << L"0 1 \"A\" 1 0 1 1 1 1 trailing\n";
+    }
+    ok &= expect(empty_presets(), L"preset rows with trailing tokens must be rejected");
+    {
+        std::wofstream output(temporary.path / L"presets.profile", std::ios::trunc);
+        output << L"0 1 \"A\" 1 0 1 1 1 1\n"
+                  L"1 1 \"B\" 1 0 1 1 1 1\n"
+                  L"2 1 \"C\" 1 0 1 1 1 1\n"
+                  L"3 1 \"D\" 1 0 1 1 1 1\n"
+                  L"4 1 \"E\" 1 0 1 1 1 1\n";
+    }
+    ok &= expect(empty_presets(), L"preset files with extra rows must be rejected");
+
     const std::vector<Profile> profiles{{L"test-id", L"Test Profile", settings, true}};
     ok &= expect(store.save_profiles(profiles, error), L"profiles v1 must save atomically");
     std::vector<Profile> loaded_profiles;
@@ -190,6 +288,20 @@ bool check_store() {
     ok &= expect(valid_contents == unchanged_contents,
                  L"rejecting invalid profiles must not overwrite the existing file");
 
+    std::vector<Profile> duplicate_profiles = profiles;
+    duplicate_profiles.push_back(profiles[0]);
+    error.clear();
+    ok &= expect(!store.save_profiles(duplicate_profiles, error),
+                 L"duplicate profile ids must be rejected before writing");
+    std::vector<Profile> empty_profiles;
+    ok &= expect(!store.save_profiles(empty_profiles, error),
+                 L"an empty profile collection must be rejected before writing");
+    std::wifstream still_valid_input(valid_profiles_path);
+    const std::wstring still_valid_contents((std::istreambuf_iterator<wchar_t>(still_valid_input)),
+                                            std::istreambuf_iterator<wchar_t>());
+    ok &= expect(still_valid_contents == valid_contents,
+                 L"rejected profile writes must leave the previous file intact");
+
     {
         std::wofstream output(temporary.path / L"profiles.v1", std::ios::trunc);
         output << L"GammaChangerProfiles 1\n"
@@ -207,6 +319,88 @@ bool check_store() {
     }
     ok &= expect(store.load_profiles(loaded_profiles) == ProfileLoadStatus::unsupported_version,
                  L"newer profile versions must not be overwritten");
+
+    {
+        std::wofstream output(temporary.path / L"profiles.v1", std::ios::trunc);
+        output << L"GammaChangerProfiles 1 trailing-junk\n";
+    }
+    ok &= expect(store.load_profiles(loaded_profiles) == ProfileLoadStatus::corrupt,
+                 L"profile header trailing data must be rejected");
+
+    {
+        std::ofstream output(temporary.path / L"oversized.profile", std::ios::binary);
+        output.seekp(64 * 1024);
+        output.put('\0');
+    }
+    CalibrationSettings rejected{};
+    ok &= expect(!store.try_load_params(L"oversized", rejected),
+                 L"oversized per-display settings must be rejected");
+
+    {
+        std::ofstream output(temporary.path / L"profiles.v1", std::ios::binary);
+        output.seekp(4 * 1024 * 1024);
+        output.put('\0');
+    }
+    loaded_profiles.clear();
+    ok &= expect(store.load_profiles(loaded_profiles) == ProfileLoadStatus::corrupt &&
+                     loaded_profiles.empty(),
+                 L"oversized profiles files must be reported as corrupt");
+
+    {
+        std::ofstream output(temporary.path / L"presets.profile", std::ios::binary);
+        output.seekp(64 * 1024);
+        output.put('\0');
+    }
+    const auto rejected_presets = store.load_presets();
+    ok &= expect(std::none_of(rejected_presets.begin(), rejected_presets.end(),
+                              [](const PresetSlot& slot) { return slot.occupied; }),
+                 L"oversized presets files must fall back to empty slots");
+    return ok;
+}
+
+bool check_profile_list_logic() {
+    bool ok = true;
+    const std::vector<Profile> profiles{
+        {L"profile-1", L"Custom 1", default_params(), true},
+        {L"profile-2", L"Custom 2", default_params(), true},
+        {L"legacy-slot-1", L"Legacy", default_params(), true},
+    };
+    ok &= expect(next_profile_id(profiles) == L"profile-3",
+                 L"next_profile_id must skip existing ids");
+    ok &= expect(next_custom_profile_name(profiles) == L"Custom 3",
+                 L"next_custom_profile_name must skip existing names");
+    ok &= expect(active_index_after_delete(5, 2, 4) == 3,
+                 L"deleting before the active profile must shift the index left");
+    ok &= expect(active_index_after_delete(5, 4, 4) == 3,
+                 L"deleting the active profile must select the previous one");
+    ok &= expect(active_index_after_delete(5, 4, 2) == 2,
+                 L"deleting after the active profile must keep its index");
+    ok &= expect(active_index_after_delete(1, 0, 0) == 0,
+                 L"deleting the only profile must fall back to index zero");
+    ok &= expect(clamp_profile_scroll(-10, 10, 36, 142) == 0,
+                 L"negative profile scroll must clamp to zero");
+    ok &= expect(clamp_profile_scroll(1000, 10, 36, 142) == 218,
+                 L"profile scroll must clamp to the last full row");
+    ok &= expect(profile_scroll_to_show(9, 10, 0, 279, 421, 36, 34) == 216,
+                 L"scroll-to-show must bring the last row into view");
+    ok &= expect(profile_scroll_to_show(0, 10, 216, 279, 421, 36, 34) == 0,
+                 L"scroll-to-show must bring the first row back into view");
+
+    CalibrationSession session;
+    ok &= expect(!session.undo_applies_to(L"display-1"),
+                 L"an empty undo snapshot must not apply to any display");
+    session.profile_switch_undo_available = true;
+    session.undo_display_id = L"display-1";
+    ok &= expect(session.undo_applies_to(L"display-1"),
+                 L"an undo snapshot must apply to its captured display");
+    ok &= expect(!session.undo_applies_to(L"display-2"),
+                 L"an undo snapshot must be display-scoped");
+    session.mark_clean();
+    ok &= expect(!session.dirty, L"mark_clean must clear the dirty flag");
+    session.clear_undo();
+    ok &= expect(!session.profile_switch_undo_available &&
+                     session.undo_display_id.empty(),
+                 L"clear_undo must clear the whole undo snapshot");
     return ok;
 }
 
@@ -231,6 +425,30 @@ bool check_profile_migration() {
     ok &= expect(store.load_profiles(profiles) == ProfileLoadStatus::loaded &&
                      profiles.size() == kPresetCount + 1,
                  L"migration must create one builtin and four compatibility profiles");
+
+    {
+        std::vector<Profile> replaced = manager.profiles();
+        replaced[0].name = L"Default Renamed";
+        ok &= expect(manager.replace_profiles(replaced, error),
+                     L"replace_profiles must persist the whole profile collection");
+        profiles.clear();
+        ok &= expect(store.load_profiles(profiles) == ProfileLoadStatus::loaded &&
+                         !profiles.empty() && profiles[0].name == L"Default Renamed",
+                     L"replace_profiles must round-trip the updated collection");
+    }
+
+    {
+        std::wofstream output(temporary.path / L"profiles.v1", std::ios::trunc);
+        output << L"GammaChangerProfiles 1\n\"broken";
+    }
+    profiles.clear();
+    ok &= expect(store.load_profiles(profiles) == ProfileLoadStatus::corrupt,
+                 L"damaged profiles must be reported as corrupt");
+    const auto legacy_fallback = store.load_presets();
+    ok &= expect(legacy_fallback[1].occupied &&
+                     legacy_fallback[1].name == L"Legacy Gaming" &&
+                     same_settings(legacy_fallback[1].params, settings),
+                 L"legacy presets must remain available when profiles.v1 is corrupt");
     return ok;
 }
 
@@ -238,7 +456,7 @@ bool check_profile_migration() {
 
 int wmain() {
     const bool ok = check_validation() && check_lut() && check_store() &&
-                    check_profile_migration();
+                    check_profile_migration() && check_profile_list_logic();
     if (!ok) return 1;
     std::wcout << L"core safety checks passed\n";
     return 0;

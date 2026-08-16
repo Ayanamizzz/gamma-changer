@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <iostream>
+#include <stdexcept>
 
 using namespace gamma_changer;
 
@@ -18,7 +19,9 @@ struct TemporaryDirectory {
                (L"GammaChangerTransactionCheck-" + std::to_wstring(GetCurrentProcessId()));
         std::error_code ignored;
         std::filesystem::remove_all(path, ignored);
-        std::filesystem::create_directories(path);
+        std::error_code ec;
+        std::filesystem::create_directories(path, ec);
+        if (ec) throw std::runtime_error("could not create the transaction-check temp directory");
     }
     ~TemporaryDirectory() {
         std::error_code ignored;
@@ -124,6 +127,48 @@ int wmain() {
     const CommitResult rollback_failed = fifth_controller.commit(display, settings);
     ok &= expect(rollback_failed.status == CommitStatus::rollback_failed,
                  L"a failed ramp rollback must be reported distinctly");
+
+    {
+        ProfileStore identity_store(temporary.path / L"identity");
+        FakeRampBackend identity_backend;
+        CalibrationController identity_controller(identity_store, identity_backend);
+        ok &= expect(!identity_controller.has_saved_settings(display),
+                     L"an unconfigured display must not be treated as configured");
+        std::wstring error;
+        ok &= expect(identity_store.save_params(display.stable_id, settings, error),
+                     L"identity fixture must save stable-id settings");
+        ok &= expect(identity_controller.has_saved_settings(display),
+                     L"stable-id settings must be recognized");
+    }
+
+    {
+        ProfileStore legacy_store(temporary.path / L"legacy-restore");
+        FakeRampBackend legacy_backend;
+        CalibrationController legacy_controller(legacy_store, legacy_backend);
+        const GammaRamp legacy_ramp = build_ramp(settings);
+        std::wstring error;
+        ok &= expect(legacy_store.save_base_ramp(display.device_name, legacy_ramp, error),
+                     L"legacy restore fixture must save a device-name ramp");
+        ok &= expect(legacy_controller.has_saved_settings(display) == false,
+                     L"legacy ramp alone must not imply saved calibration settings");
+        ok &= expect(legacy_controller.restore_original(display, error),
+                     L"restore must fall back to the legacy device-name ramp");
+        ok &= expect(legacy_backend.current.channel == legacy_ramp.channel,
+                     L"the legacy ramp must be written back to the display");
+        GammaRamp migrated{};
+        ok &= expect(legacy_store.load_base_ramp(display.stable_id, migrated) &&
+                         migrated.channel == legacy_ramp.channel,
+                     L"the legacy ramp must be migrated to the stable identity");
+
+        ProfileStore empty_store(temporary.path / L"empty-restore");
+        FakeRampBackend empty_backend;
+        CalibrationController empty_controller(empty_store, empty_backend);
+        const int writes_before = empty_backend.write_count;
+        ok &= expect(!empty_controller.restore_original(display, error),
+                     L"restore must refuse a display without any saved base ramp");
+        ok &= expect(empty_backend.write_count == writes_before,
+                     L"a refused restore must not touch the display ramp");
+    }
 
     if (!ok) return 1;
     std::wcout << L"calibration transaction checks passed\n";

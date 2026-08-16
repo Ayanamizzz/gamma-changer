@@ -5,10 +5,24 @@ if (-not (Test-Path -LiteralPath $cmake)) {
     throw "CMake was not found at $cmake"
 }
 
-& $cmake --preset vs2022-x64
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$project_root = Split-Path -Parent $MyInvocation.MyCommand.Path
+Push-Location $project_root
+try {
+    & $cmake --preset vs2022-x64
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-& $cmake --build --preset release-gui
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $cmake --build --preset release-gui
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Write-Host "Build complete: build\vs2022-x64\Release\gamma_changer_gui.exe"
+    & $cmake --build --preset release-checks
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    $ctest = Join-Path (Split-Path -Parent $cmake) "ctest.exe"
+    & $ctest --preset release
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    Write-Host "Build complete: build\vs2022-x64\Release\gamma_changer_gui.exe"
+}
+finally {
+    Pop-Location
+}

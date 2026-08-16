@@ -1,4 +1,4 @@
-# Gamma Changer 2.2 Completion Report
+# Gamma Changer 2.3.2 Completion Report
 
 Date: 2026-08-13  
 Target: Windows x64, C++17, native Win32
@@ -26,10 +26,12 @@ Target: Windows x64, C++17, native Win32
   profile application, passive Saving/Saved feedback, retry-on-error, and one-step Ctrl+Z.
 - Simplified daily controls with Restore defaults, a real per-user Start with Windows switch,
   silent startup-to-Tray restoration, and a consolidated New profile/trash action row.
+- Replaced the monolithic `gui_main.cpp` with layered `application` and `src/ui/*` modules;
+  extracted testable `CalibrationSession` and `ProfileListLogic` domain modules.
 
 ## Verification
 
-- Release x64 GUI, CLI, and safety-test targets build successfully with `/W4` and optimization.
+- Release x64 GUI and safety-test targets build successfully with `/W4` and optimization.
 - `core_safety_check`: 100% passed.
 - Real display enumeration: 2 displays (`S65`, `25G3Z`).
 - GUI smoke test: profile switch, Live Preview toggle, dirty-state action, and resize passed.
