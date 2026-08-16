@@ -195,11 +195,17 @@ void create_profile_from_current(GuiState& gui) {
         gui.profiles = previous;
         return;
     }
-    // Creating a new profile must not select or apply it. The user stays on the
-    // current profile; the new profile is simply appended to the list.
-    refresh_preset_buttons(gui);
-    layout_controls_for_current_size(gui);
-    set_status(gui, profile.name + L" created with default settings", StatusTone::success);
+    // Creating a new profile applies it immediately: switch to the fresh
+    // default profile so its default calibration takes effect right away.
+    const std::size_t new_index = gui.profiles.size() - 1;
+    select_preset(gui, new_index);
+    if (gui.active_preset == new_index) {
+        scroll_profile_into_view(gui, new_index);
+        set_status(gui, profile.name + L" created and applied  |  Ctrl+Z to go back",
+                   StatusTone::success);
+    } else {
+        layout_controls_for_current_size(gui);
+    }
 }
 
 bool persist_presets(GuiState& gui) {
