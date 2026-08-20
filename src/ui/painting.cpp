@@ -56,6 +56,20 @@ void paint_parent_layer(HWND control, HDC dc, GuiState& gui) {
 void draw_owner_button(const DRAWITEMSTRUCT& item, const GuiState& gui) {
     const bool pressed = (item.itemState & ODS_SELECTED) != 0;
     const bool disabled = (item.itemState & ODS_DISABLED) != 0;
+    const bool focused = (item.itemState & ODS_FOCUS) != 0;
+    const auto draw_focus_frame = [&](COLORREF color) {
+        RECT focus = item.rcItem;
+        InflateRect(&focus, -2, -2);
+        HPEN focus_pen = CreatePen(PS_SOLID, 2, color);
+        if (!focus_pen) return;
+        const auto old_focus_pen = SelectObject(item.hDC, focus_pen);
+        const auto old_focus_brush = SelectObject(item.hDC, GetStockObject(NULL_BRUSH));
+        RoundRect(item.hDC, focus.left, focus.top, focus.right, focus.bottom,
+                  ui::Metrics::control_radius, ui::Metrics::control_radius);
+        SelectObject(item.hDC, old_focus_brush);
+        SelectObject(item.hDC, old_focus_pen);
+        DeleteObject(focus_pen);
+    };
 
     if (item.CtlID == kStartupToggle) {
         paint_parent_layer(item.hwndItem, item.hDC, const_cast<GuiState&>(gui));
@@ -91,6 +105,7 @@ void draw_owner_button(const DRAWITEMSTRUCT& item, const GuiState& gui) {
         SelectObject(item.hDC, prior_pen);
         SelectObject(item.hDC, prior_brush);
         DeleteObject(thumb);
+        if (focused) draw_focus_frame(ui::Theme::primary_soft);
         if (old_font) SelectObject(item.hDC, old_font);
         return;
     }
@@ -100,12 +115,16 @@ void draw_owner_button(const DRAWITEMSTRUCT& item, const GuiState& gui) {
         static_cast<std::size_t>(item.CtlID - kProfileIdBase) < gui.profiles.size();
     const std::size_t profile_index =
         profile_item ? static_cast<std::size_t>(item.CtlID - kProfileIdBase) : 0;
+    const UINT profile_dpi = profile_item ? GetDpiForWindow(item.hwndItem) : 96;
+    const auto profile_scale = [profile_dpi](int value) {
+        return MulDiv(value, static_cast<int>(profile_dpi), 96);
+    };
 
     COLORREF fill = ui::Theme::primary;
     COLORREF text = ui::Theme::control_surface;
     COLORREF outline = fill;
     if (profile_item) {
-        if (profile_index == gui.active_preset) {
+        if (gui.active_profile_linked && profile_index == gui.active_preset) {
             fill = ui::Theme::sidebar_selected;
             text = ui::Theme::control_surface;
             outline = ui::Theme::sidebar_selected;
@@ -151,15 +170,25 @@ void draw_owner_button(const DRAWITEMSTRUCT& item, const GuiState& gui) {
         paint_parent_layer(item.hwndItem, item.hDC, const_cast<GuiState&>(gui));
     }
 
-    const bool selected_profile = profile_item && profile_index == gui.active_preset;
+    const bool selected_profile = profile_item && gui.active_profile_linked &&
+                                  profile_index == gui.active_preset;
+    const bool editing_profile = profile_item &&
+                                 profile_index == gui.renaming_preset;
     const bool hovered_profile = profile_item && gui.hovered_profile == item.hwndItem;
     const bool ghost_action = item.CtlID == kRefreshButton || item.CtlID == kPresetDelete;
-    if (selected_profile) {
+    const int profile_radius = profile_scale(ui::Metrics::control_radius);
+    if (editing_profile) {
+        // The owner-drawn row remains the visual host while the native EDIT
+        // overlays only its text area. A solid editing surface also matches the
+        // EDIT brush, avoiding a rectangular light island in the Sidebar.
+        ui::draw_panel(item.hDC, item.rcItem, ui::Theme::sidebar_selected,
+                       ui::Theme::primary, profile_radius);
+    } else if (selected_profile) {
         ui::draw_layered_panel(item.hDC, item.rcItem, ui::Theme::sidebar_selected, 142,
-                               CLR_INVALID, ui::Metrics::control_radius);
+                               CLR_INVALID, profile_radius);
     } else if (hovered_profile) {
         ui::draw_layered_panel(item.hDC, item.rcItem, ui::Theme::sidebar_selected, 72,
-                               CLR_INVALID, ui::Metrics::control_radius);
+                               CLR_INVALID, profile_radius);
     } else if (!profile_item && !ghost_action) {
         HBRUSH brush = CreateSolidBrush(fill);
         HPEN pen = CreatePen(PS_SOLID, 1, outline);
@@ -184,7 +213,7 @@ void draw_owner_button(const DRAWITEMSTRUCT& item, const GuiState& gui) {
                                : DT_CENTER | DT_VCENTER | DT_SINGLELINE;
     RECT label_rect = item.rcItem;
     if (profile_item) {
-        label_rect.left += ui::Metrics::profile_text_inset;
+        label_rect.left += profile_scale(ui::Metrics::profile_text_inset);
     }
     if (item.CtlID == kRefreshButton) {
         const int cy = (item.rcItem.top + item.rcItem.bottom) / 2;
@@ -212,30 +241,39 @@ void draw_owner_button(const DRAWITEMSTRUCT& item, const GuiState& gui) {
         SelectObject(item.hDC, old_icon_brush);
         SelectObject(item.hDC, old_icon_pen);
         DeleteObject(icon_pen);
-    } else {
+    } else if (!editing_profile) {
         DrawTextW(item.hDC, label, -1, &label_rect, alignment);
     }
-    if (profile_item && gui.profile_keyboard_focus &&
-        (item.itemState & ODS_FOCUS) != 0) {
+    if (profile_item && (item.itemState & ODS_FOCUS) != 0) {
         RECT focus = item.rcItem;
-        InflateRect(&focus, -3, -2);
+        InflateRect(&focus, -profile_scale(3), -profile_scale(2));
         HPEN focus_pen = CreatePen(PS_SOLID, 1, ui::Theme::sidebar_secondary);
         const auto old_focus_pen = SelectObject(item.hDC, focus_pen);
         const auto old_focus_brush = SelectObject(item.hDC, GetStockObject(NULL_BRUSH));
         RoundRect(item.hDC, focus.left, focus.top, focus.right, focus.bottom,
-                  ui::Metrics::control_radius, ui::Metrics::control_radius);
+                  profile_radius, profile_radius);
         SelectObject(item.hDC, old_focus_brush);
         SelectObject(item.hDC, old_focus_pen);
         DeleteObject(focus_pen);
     }
-    if (profile_item && profile_index == gui.active_preset) {
+    if (profile_item && gui.active_profile_linked &&
+        profile_index == gui.active_preset) {
         HBRUSH indicator = CreateSolidBrush(ui::Theme::primary);
         HGDIOBJ old_indicator = SelectObject(item.hDC, indicator);
-        RECT accent{item.rcItem.left + 3, item.rcItem.top + 6,
-                    item.rcItem.left + 6, item.rcItem.bottom - 6};
+        RECT accent{item.rcItem.left + profile_scale(3),
+                    item.rcItem.top + profile_scale(6),
+                    item.rcItem.left + profile_scale(6),
+                    item.rcItem.bottom - profile_scale(6)};
         FillRect(item.hDC, &accent, indicator);
         SelectObject(item.hDC, old_indicator);
         DeleteObject(indicator);
+    }
+    if (!profile_item && focused) {
+        const COLORREF focus_color = item.CtlID == kApplyButton
+                                         ? ui::Theme::control_surface
+                                         : (sidebar_button ? ui::Theme::primary_soft
+                                                           : ui::Theme::primary);
+        draw_focus_frame(focus_color);
     }
     if (old_font) SelectObject(item.hDC, old_font);
 }

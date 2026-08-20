@@ -23,13 +23,18 @@ Application services
 
 Domain (no windows.h)
   CalibrationSettings / LutGenerator
-  ProfileStore / ProfileManager / DisplayInfo
   ProfileListLogic
+
+Infrastructure (Win32 and filesystem adapters)
+  DisplayManager / DisplayRampBackend
+  ProfileStore / ProfileManager
+  InstanceManager / StartupManager / Logger
 ```
 
 Rules:
 
-1. Domain modules never include `<windows.h>`.
+1. Domain modules never include `<windows.h>`; Win32 and persistence adapters live in
+   the infrastructure layer.
 2. Application services own all state transitions and persistence decisions.
 3. Presentation modules only translate window messages into service calls and
    render the resulting state.
@@ -70,6 +75,10 @@ Rules:
    "never write LUT to an unconfigured display" rule in one place.
 3. Optionally virtualize the profile list when profile counts grow beyond a few
    dozen rows.
+4. Move Profile, per-display settings, preference, and actual Ramp snapshots behind
+   one transaction service so compensation does not depend on a second generated LUT.
+5. Add an accessibility theme adapter for Windows High Contrast and UI Automation
+   status announcements.
 
 ## Testing strategy
 
@@ -82,5 +91,10 @@ Rules:
 
 - `/W4 /WX` builds and CTest are mandatory.
 - CI already builds Release/Debug on Windows and runs tests.
-- Future: clang-format, ASan Debug job, single version source, code signing,
-  installer or portable package.
+- CMake is the single version source and generates both the C++ version header
+  and Windows `VERSIONINFO`; release tags must match it exactly.
+- Tagged builds create a draft portable release, record SHA-256 checksums, and
+  report the executable's actual Authenticode state. Signing remains optional
+  until a project certificate is configured.
+- Future: clang-format, an ASan/Clang job, installer packaging, and a documented
+  license/attribution policy for bundled visual assets.

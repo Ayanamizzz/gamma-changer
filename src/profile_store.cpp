@@ -11,6 +11,7 @@
 #include <iterator>
 #include <sstream>
 #include <unordered_set>
+#include <vector>
 
 namespace gamma_changer {
 namespace {
@@ -123,7 +124,7 @@ class StoreWriteLock {
 public:
     StoreWriteLock() : mutex_(store_write_mutex()) {
         if (mutex_ != nullptr) {
-            const DWORD wait = WaitForSingleObject(mutex_, INFINITE);
+            const DWORD wait = WaitForSingleObject(mutex_, 2000);
             locked_ = wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED;
         }
     }
@@ -132,6 +133,7 @@ public:
     }
     StoreWriteLock(const StoreWriteLock&) = delete;
     StoreWriteLock& operator=(const StoreWriteLock&) = delete;
+    bool acquired() const { return locked_; }
 
 private:
     HANDLE mutex_ = nullptr;
@@ -153,6 +155,17 @@ constexpr std::size_t kMaxProfileRows = 1024;
 constexpr std::size_t kMaxPresetNameLength = 64;
 
 constexpr std::size_t kMaxFilenameStem = 80;
+
+bool encoded_text_exceeds(const std::wstring& text, std::uintmax_t limit) {
+    const std::string bytes = to_utf8(text);
+    return (!text.empty() && bytes.empty()) || bytes.size() > limit;
+}
+
+bool contains_record_separator(const std::wstring& value) {
+    return value.find(L'\t') != std::wstring::npos ||
+           value.find(L'\r') != std::wstring::npos ||
+           value.find(L'\n') != std::wstring::npos;
+}
 
 // FNV-1a 64-bit: stable across standard-library versions and platforms, unlike
 // std::hash<std::wstring>, so long display identities keep the same file name
@@ -205,11 +218,27 @@ std::wstring legacy_hashed_filename(std::wstring value) {
 // Returns the base data directory only; ProfileStore appends the application
 // folder so every branch produces the same layout.
 std::filesystem::path local_app_data() {
-    wchar_t buffer[MAX_PATH]{};
-    const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", buffer, MAX_PATH);
-    if (length > 0 && length < MAX_PATH) return std::filesystem::path(buffer);
-    const DWORD temp_length = GetTempPathW(MAX_PATH, buffer);
-    if (temp_length > 0 && temp_length < MAX_PATH) return std::filesystem::path(buffer);
+    const DWORD required = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
+    if (required > 1) {
+        std::vector<wchar_t> buffer(required, L'\0');
+        const DWORD length = GetEnvironmentVariableW(
+            L"LOCALAPPDATA", buffer.data(), static_cast<DWORD>(buffer.size()));
+        if (length > 0 && length < buffer.size()) {
+            return std::filesystem::path(std::wstring(buffer.data(), length));
+        }
+    }
+
+    std::vector<wchar_t> temp_buffer(512, L'\0');
+    for (;;) {
+        const DWORD length = GetTempPathW(static_cast<DWORD>(temp_buffer.size()),
+                                          temp_buffer.data());
+        if (length == 0) break;
+        if (length < temp_buffer.size()) {
+            return std::filesystem::path(std::wstring(temp_buffer.data(), length));
+        }
+        if (length >= 32768) break;
+        temp_buffer.resize(static_cast<std::size_t>(length) + 1, L'\0');
+    }
     std::error_code ec;
     const auto cwd = std::filesystem::current_path(ec);
     if (!ec) return cwd;
@@ -254,13 +283,25 @@ GammaParams ProfileStore::load_params(const std::wstring& display_id) const {
 bool ProfileStore::try_load_params(const std::wstring& display_id, GammaParams& params) const {
     params = default_params();
     const auto primary = params_path(display_id);
-    if (file_exceeds(primary, kParamsFileLimit)) return false;
-    std::wstring file_text;
-    if (!read_utf8_text_file(primary, file_text)) {
+    std::error_code status_error;
+    auto primary_status = std::filesystem::symlink_status(primary, status_error);
+    if (status_error == std::errc::no_such_file_or_directory) {
+        status_error.clear();
+        primary_status = std::filesystem::file_status{
+            std::filesystem::file_type::not_found};
+    }
+    if (status_error) return false;
+
+    auto source = primary;
+    if (primary_status.type() == std::filesystem::file_type::not_found) {
         const auto legacy = root_ / (legacy_hashed_filename(display_id) + L".profile");
         if (legacy == primary) return false;
-        if (!read_utf8_text_file(legacy, file_text)) return false;
+        source = legacy;
     }
+
+    if (file_exceeds(source, kParamsFileLimit)) return false;
+    std::wstring file_text;
+    if (!read_utf8_text_file(source, file_text)) return false;
 
     std::wistringstream input(file_text);
 
@@ -308,6 +349,10 @@ bool ProfileStore::save_params(const std::wstring& display_id, const GammaParams
     }
 
     StoreWriteLock lock;
+    if (!lock.acquired()) {
+        error = L"timed out waiting to write the display profile";
+        return false;
+    }
     const auto target = params_path(display_id);
     const auto temporary = target.wstring() + L".tmp";
     std::wostringstream content;
@@ -382,6 +427,10 @@ bool ProfileStore::save_presets(const std::array<PresetSlot, kPresetCount>& pres
         }
     }
     StoreWriteLock lock;
+    if (!lock.acquired()) {
+        error = L"timed out waiting to write presets";
+        return false;
+    }
     const auto target = presets_path(root_);
     const auto temporary = target.wstring() + L".tmp";
     std::wostringstream content;
@@ -389,7 +438,7 @@ bool ProfileStore::save_presets(const std::array<PresetSlot, kPresetCount>& pres
     for (std::size_t i = 0; i < kPresetCount; ++i) {
         const auto& slot = presets[i];
         const auto params = slot.occupied ? slot.params : default_params();
-        std::wstring name = slot.name;
+        std::wstring name = slot.occupied ? slot.name : std::wstring{};
         for (auto& ch : name) if (ch == L'\t' || ch == L'\r' || ch == L'\n') ch = L' ';
         content << i << L' ' << (slot.occupied ? 1 : 0) << L' ' << std::quoted(name) << L' '
                 << params.gamma << L' ' << params.brightness << L' ' << params.contrast << L' '
@@ -454,6 +503,8 @@ ProfileLoadStatus ProfileStore::load_profiles(std::vector<Profile>& profiles) co
         }
         std::wstring validation_error;
         if (!profile.id.empty() && !profile.name.empty() &&
+            !contains_record_separator(profile.id) &&
+            !contains_record_separator(profile.name) &&
             validate_params(profile.settings, validation_error) && ids.insert(profile.id).second &&
             (saved == 0 || saved == 1)) {
             profile.saved = saved != 0;
@@ -476,10 +527,17 @@ bool ProfileStore::save_profiles(const std::vector<Profile>& profiles,
         error = L"refusing to save an empty profile collection";
         return false;
     }
+    if (profiles.size() > kMaxProfileRows) {
+        error = L"refusing to save more than " + std::to_wstring(kMaxProfileRows) +
+                L" profiles";
+        return false;
+    }
     std::unordered_set<std::wstring> ids;
     for (const auto& profile : profiles) {
         std::wstring validation_error;
         if (profile.id.empty() || profile.name.empty() ||
+            contains_record_separator(profile.id) ||
+            contains_record_separator(profile.name) ||
             !validate_params(profile.settings, validation_error)) {
             error = L"refusing to save an invalid profile";
             return false;
@@ -489,21 +547,28 @@ bool ProfileStore::save_profiles(const std::vector<Profile>& profiles,
             return false;
         }
     }
-    StoreWriteLock lock;
     const auto target = profiles_path();
     const auto temporary = target.wstring() + L".tmp";
     std::wostringstream content;
     content << L"GammaChangerProfiles 1\n" << std::setprecision(17);
     for (const auto& profile : profiles) {
-        std::wstring name = profile.name;
-        for (auto& ch : name) if (ch == L'\t' || ch == L'\r' || ch == L'\n') ch = L' ';
-        content << std::quoted(profile.id) << L' ' << std::quoted(name) << L' '
+        content << std::quoted(profile.id) << L' ' << std::quoted(profile.name) << L' '
                 << (profile.saved ? 1 : 0) << L' '
                 << profile.settings.gamma << L' ' << profile.settings.brightness << L' '
                 << profile.settings.contrast << L' ' << profile.settings.r_gain << L' '
                 << profile.settings.g_gain << L' ' << profile.settings.b_gain << L'\n';
     }
-    if (!write_utf8_text_file(temporary, content.str(), error, L"profiles")) {
+    const std::wstring serialized = content.str();
+    if (encoded_text_exceeds(serialized, kProfilesFileLimit)) {
+        error = L"refusing to save a profile collection larger than 4 MiB";
+        return false;
+    }
+    StoreWriteLock lock;
+    if (!lock.acquired()) {
+        error = L"timed out waiting to write profiles";
+        return false;
+    }
+    if (!write_utf8_text_file(temporary, serialized, error, L"profiles")) {
         std::error_code ignored;
         std::filesystem::remove(temporary, ignored);
         return false;
@@ -512,47 +577,72 @@ bool ProfileStore::save_profiles(const std::vector<Profile>& profiles,
     return replace_file(temporary, target, error);
 }
 
-std::vector<DisplayProfilePreference> ProfileStore::load_profile_preferences() const {
-    std::vector<DisplayProfilePreference> preferences;
+ProfileLoadStatus ProfileStore::load_profile_preferences(
+    std::vector<DisplayProfilePreference>& preferences) const {
+    preferences.clear();
     if (file_exceeds(profile_preferences_path(), kProfilePreferencesFileLimit)) {
-        return preferences;
+        return ProfileLoadStatus::corrupt;
     }
-    std::wstring file_text;
-    if (!read_utf8_text_file(profile_preferences_path(), file_text)) return preferences;
+    std::ifstream byte_input(profile_preferences_path(), std::ios::binary);
+    if (!byte_input) return ProfileLoadStatus::missing;
+    const std::string bytes((std::istreambuf_iterator<char>(byte_input)),
+                            std::istreambuf_iterator<char>());
+    const std::wstring file_text = from_utf8(bytes);
+    if (byte_input.bad() || (!bytes.empty() && file_text.empty())) {
+        return ProfileLoadStatus::corrupt;
+    }
 
     std::wistringstream input(file_text);
     std::wstring header;
     std::size_t version = 0;
-    if (!(input >> header >> version) ||
-        header != L"GammaChangerProfilePreferences" || version != 1) {
-        return preferences;
+    if (!(input >> header >> version) || header != L"GammaChangerProfilePreferences") {
+        return ProfileLoadStatus::corrupt;
     }
+    if (version != 1) return ProfileLoadStatus::unsupported_version;
     std::wstring line;
     std::getline(input, line);
-    if (line.find_first_not_of(L" \t\r") != std::wstring::npos) return preferences;
+    if (line.find_first_not_of(L" \t\r") != std::wstring::npos) {
+        return ProfileLoadStatus::corrupt;
+    }
 
     std::unordered_set<std::wstring> display_ids;
     while (std::getline(input, line)) {
         if (line.find_first_not_of(L" \t\r") == std::wstring::npos) continue;
-        if (preferences.size() >= kMaxProfileRows) return {};
+        if (preferences.size() >= kMaxProfileRows) {
+            preferences.clear();
+            return ProfileLoadStatus::corrupt;
+        }
         std::wistringstream row(line);
         DisplayProfilePreference preference;
         if (!(row >> std::quoted(preference.display_id) >> std::quoted(preference.profile_id))) {
-            return {};
+            preferences.clear();
+            return ProfileLoadStatus::corrupt;
         }
         row >> std::ws;
         if (!row.eof() || preference.display_id.empty() || preference.profile_id.empty() ||
+            contains_record_separator(preference.display_id) ||
+            contains_record_separator(preference.profile_id) ||
             !display_ids.insert(preference.display_id).second) {
-            return {};
+            preferences.clear();
+            return ProfileLoadStatus::corrupt;
         }
         preferences.push_back(preference);
     }
-    return preferences;
+    if (input.bad()) {
+        preferences.clear();
+        return ProfileLoadStatus::corrupt;
+    }
+    return ProfileLoadStatus::loaded;
 }
 
 bool ProfileStore::save_profile_preferences(
     const std::vector<DisplayProfilePreference>& preferences,
     std::wstring& error) const {
+    if (preferences.size() > kMaxProfileRows) {
+        error = L"refusing to save more than " + std::to_wstring(kMaxProfileRows) +
+                L" display profile preferences";
+        return false;
+    }
     std::unordered_set<std::wstring> display_ids;
     for (const auto& preference : preferences) {
         if (preference.display_id.empty() || preference.profile_id.empty()) {
@@ -574,7 +664,6 @@ bool ProfileStore::save_profile_preferences(
         }
     }
 
-    StoreWriteLock lock;
     const auto target = profile_preferences_path();
     const auto temporary = target.wstring() + L".tmp";
     std::wostringstream content;
@@ -583,7 +672,17 @@ bool ProfileStore::save_profile_preferences(
         content << std::quoted(preference.display_id) << L' '
                 << std::quoted(preference.profile_id) << L'\n';
     }
-    if (!write_utf8_text_file(temporary, content.str(), error, L"profile preferences")) {
+    const std::wstring serialized = content.str();
+    if (encoded_text_exceeds(serialized, kProfilePreferencesFileLimit)) {
+        error = L"refusing to save display profile preferences larger than 64 KiB";
+        return false;
+    }
+    StoreWriteLock lock;
+    if (!lock.acquired()) {
+        error = L"timed out waiting to write display profile preferences";
+        return false;
+    }
+    if (!write_utf8_text_file(temporary, serialized, error, L"profile preferences")) {
         std::error_code ignored;
         std::filesystem::remove(temporary, ignored);
         return false;
@@ -593,14 +692,25 @@ bool ProfileStore::save_profile_preferences(
 
 bool ProfileStore::load_base_ramp(const std::wstring& display_id, GammaRamp& ramp) const {
     const auto primary = ramp_path(display_id);
-    if (file_exceeds(primary, kRampFileLimit)) return false;
-    std::ifstream input(primary, std::ios::binary);
-    if (!input) {
+    std::error_code status_error;
+    auto primary_status = std::filesystem::symlink_status(primary, status_error);
+    if (status_error == std::errc::no_such_file_or_directory) {
+        status_error.clear();
+        primary_status = std::filesystem::file_status{
+            std::filesystem::file_type::not_found};
+    }
+    if (status_error) return false;
+
+    auto source = primary;
+    if (primary_status.type() == std::filesystem::file_type::not_found) {
         const auto legacy = root_ / L"ramps" / (legacy_hashed_filename(display_id) + L".ramp");
         if (legacy == primary) return false;
-        input.open(legacy, std::ios::binary);
-        if (!input) return false;
+        source = legacy;
     }
+
+    if (file_exceeds(source, kRampFileLimit)) return false;
+    std::ifstream input(source, std::ios::binary);
+    if (!input) return false;
     input.read(reinterpret_cast<char*>(ramp.channel[0].data()), sizeof(ramp.channel));
     return input.gcount() == static_cast<std::streamsize>(sizeof(ramp.channel)) &&
            input.peek() == std::char_traits<char>::eof();
@@ -609,7 +719,18 @@ bool ProfileStore::load_base_ramp(const std::wstring& display_id, GammaRamp& ram
 bool ProfileStore::save_base_ramp(const std::wstring& display_id, const GammaRamp& ramp,
                                   std::wstring& error) const {
     StoreWriteLock lock;
+    if (!lock.acquired()) {
+        error = L"timed out waiting to write the base display ramp";
+        return false;
+    }
     const auto target = ramp_path(display_id);
+    std::error_code directory_error;
+    std::filesystem::create_directories(target.parent_path(), directory_error);
+    if (directory_error) {
+        error = L"cannot recreate the base ramp directory (error " +
+                std::to_wstring(directory_error.value()) + L")";
+        return false;
+    }
     const auto temporary = target.wstring() + L".tmp";
     std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
     if (!output) {

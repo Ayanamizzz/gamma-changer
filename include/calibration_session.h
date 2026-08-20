@@ -19,6 +19,7 @@ struct CalibrationSession {
     std::size_t undo_preset = 0;
     GammaParams undo_params{};
     Profile undo_profile{};
+    bool undo_profile_linked = false;
 
     bool comparing_original = false;
 

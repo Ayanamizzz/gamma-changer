@@ -5,21 +5,26 @@ namespace gamma_changer {
 LRESULT CALLBACK compare_proc(HWND button, UINT message, WPARAM wparam, LPARAM lparam,
                               UINT_PTR, DWORD_PTR) {
     auto* gui = state(GetParent(button));
-    if (message == WM_LBUTTONDOWN && gui && gui->live_preview && gui->session.dirty) {
+    const bool keyboard_press = message == WM_KEYDOWN && wparam == VK_SPACE;
+    const bool keyboard_release = message == WM_KEYUP && wparam == VK_SPACE;
+    if ((message == WM_LBUTTONDOWN || keyboard_press) && gui && gui->live_preview &&
+        gui->session.dirty && !gui->session.comparing_original) {
         if (cancel_active_preview(*gui)) {
             gui->session.comparing_original = true;
-            SetCapture(button);
+            if (message == WM_LBUTTONDOWN) SetCapture(button);
             set_status(*gui, L"Showing the committed result", StatusTone::idle);
             InvalidateRect(button, nullptr, FALSE);
         }
     }
-    if ((message == WM_LBUTTONUP || message == WM_CAPTURECHANGED) && gui &&
+    if ((message == WM_LBUTTONUP || message == WM_CAPTURECHANGED || keyboard_release ||
+         message == WM_KILLFOCUS) && gui &&
         gui->session.comparing_original) {
         gui->session.comparing_original = false;
         if (GetCapture() == button) ReleaseCapture();
-        preview_selected(*gui);
+        if (!gui->destroying) preview_selected(*gui);
         InvalidateRect(button, nullptr, FALSE);
     }
+    if (keyboard_press || keyboard_release) return 0;
     if (message == WM_NCDESTROY) RemoveWindowSubclass(button, compare_proc, 1);
     return DefSubclassProc(button, message, wparam, lparam);
 }
@@ -29,10 +34,35 @@ void set_slider(HWND slider, int value) {
     SendMessageW(slider, TBM_SETPOS, TRUE, value);
 }
 
-void set_edit(HWND edit, double value) {
+void set_edit(HWND edit, double value, bool preserve_focused_state = false) {
     wchar_t text[64]{};
     swprintf_s(text, L"%.2f", value);
-    SetWindowTextW(edit, text);
+    wchar_t current[64]{};
+    GetWindowTextW(edit, current, static_cast<int>(std::size(current)));
+    if (wcscmp(current, text) == 0) return;
+
+    if (!preserve_focused_state || GetFocus() != edit) {
+        SetWindowTextW(edit, text);
+        return;
+    }
+
+    DWORD selection_start = 0;
+    DWORD selection_end = 0;
+    SendMessageW(edit, EM_GETSEL, reinterpret_cast<WPARAM>(&selection_start),
+                 reinterpret_cast<LPARAM>(&selection_end));
+    const DWORD old_length = static_cast<DWORD>(wcslen(current));
+    const DWORD new_length = static_cast<DWORD>(wcslen(text));
+    const auto map_selection = [old_length, new_length](DWORD position) {
+        return position >= old_length ? new_length : std::min(position, new_length);
+    };
+    selection_start = map_selection(selection_start);
+    selection_end = map_selection(selection_end);
+
+    SendMessageW(edit, EM_SETSEL, 0, -1);
+    // EM_REPLACESEL keeps the normalization in the native Edit undo history;
+    // SetWindowTextW would clear that history while an auto-save is running.
+    SendMessageW(edit, EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>(text));
+    SendMessageW(edit, EM_SETSEL, selection_start, selection_end);
 }
 
 bool read_edit(HWND edit, double& value) {
@@ -64,29 +94,37 @@ GammaParams params_from_sliders(const GuiState& gui) {
 void edit_changed(GuiState& gui, HWND edit, HWND slider, double minimum, double maximum) {
     double value = 0.0;
     if (!read_edit(edit, value) || !std::isfinite(value)) return;
-    value = std::clamp(value, minimum, maximum);
+    const double clamped = std::clamp(value, minimum, maximum);
+    const bool range_adjusted = clamped != value;
     gui.syncing_controls = true;
-    set_slider(slider, static_cast<int>(value * 100.0));
+    set_slider(slider, static_cast<int>(std::lround(clamped * 100.0)));
     gui.syncing_controls = false;
     mark_changed(gui);
+    // If clamping lands on the already committed value, mark_changed() sees a
+    // clean session and normally cancels auto-save. Keep one debounce timer so
+    // save_and_apply_current() can canonicalize the visible text without
+    // rewriting an in-progress first character such as "0" immediately.
+    if (range_adjusted && !gui.session.dirty) {
+        SetTimer(gui.window, kAutoSaveTimer, kAutoSaveDelayMs, nullptr);
+    }
 }
 
 void normalize_edit(GuiState& gui, HWND edit, HWND slider, double minimum, double maximum) {
     double value = 0.0;
     if (!read_edit(edit, value) || !std::isfinite(value)) {
         gui.syncing_controls = true;
-        set_edit(edit, slider_value(slider) / 100.0);
+        set_edit(edit, slider_value(slider) / 100.0, true);
         gui.syncing_controls = false;
         return;
     }
     value = std::clamp(value, minimum, maximum);
     gui.syncing_controls = true;
-    set_slider(slider, static_cast<int>(value * 100.0));
-    set_edit(edit, value);
+    set_slider(slider, static_cast<int>(std::lround(value * 100.0)));
+    set_edit(edit, slider_value(slider) / 100.0, true);
     gui.syncing_controls = false;
 }
 
-void normalize_all_edits(GuiState& gui) {
+void normalize_all_edits(GuiState& gui, bool notify_change) {
     normalize_edit(gui, gui.gamma_value, gui.gamma_slider,
                    calibration_ranges::gamma.minimum, calibration_ranges::gamma.maximum);
     normalize_edit(gui, gui.brightness_value, gui.brightness_slider,
@@ -99,7 +137,12 @@ void normalize_all_edits(GuiState& gui) {
                    calibration_ranges::gain.minimum, calibration_ranges::gain.maximum);
     normalize_edit(gui, gui.b_gain_value, gui.b_gain_slider,
                    calibration_ranges::gain.minimum, calibration_ranges::gain.maximum);
-    mark_changed(gui);
+    if (notify_change) {
+        mark_changed(gui);
+    } else {
+        gui.session.dirty =
+            !settings_equal(params_from_sliders(gui), gui.session.committed_settings);
+    }
 }
 
 
@@ -197,7 +240,7 @@ LRESULT CALLBACK numeric_edit_proc(HWND edit, UINT message, WPARAM wparam, LPARA
         }
         if (slider) {
             gui->syncing_controls = true;
-            set_slider(slider, static_cast<int>(value * 100.0));
+            set_slider(slider, static_cast<int>(std::lround(value * 100.0)));
             set_edit(edit, value);
             gui->syncing_controls = false;
             mark_changed(*gui);
@@ -214,41 +257,53 @@ LRESULT CALLBACK slider_proc(HWND slider, UINT message, WPARAM wparam, LPARAM lp
     if (message == WM_PAINT) {
         PAINTSTRUCT paint{};
         HDC dc = BeginPaint(slider, &paint);
-        RECT client{};
-        GetClientRect(slider, &client);
         auto* gui = state(GetParent(slider));
         if (gui) paint_parent_layer(slider, dc, *gui);
 
-        const int inset = 7;
-        const int center_y = (client.bottom - client.top) / 2;
-        const int minimum = static_cast<int>(SendMessageW(slider, TBM_GETRANGEMIN, 0, 0));
-        const int maximum = static_cast<int>(SendMessageW(slider, TBM_GETRANGEMAX, 0, 0));
-        const int position = static_cast<int>(SendMessageW(slider, TBM_GETPOS, 0, 0));
-        const int track_width = std::max(1, static_cast<int>(client.right) - inset * 2);
-        const int thumb_x = inset + MulDiv(position - minimum, track_width,
-                                           std::max(1, maximum - minimum));
-        RECT inactive{inset, center_y - 2, client.right - inset, center_y + 2};
-        RECT active{inset, center_y - 2, thumb_x, center_y + 2};
-        ui::draw_panel(dc, inactive, ui::Theme::track_inactive,
-                       ui::Theme::track_inactive, ui::Metrics::space_1);
+        RECT channel{};
+        RECT native_thumb{};
+        SendMessageW(slider, TBM_GETCHANNELRECT, 0, reinterpret_cast<LPARAM>(&channel));
+        SendMessageW(slider, TBM_GETTHUMBRECT, 0, reinterpret_cast<LPARAM>(&native_thumb));
+        const UINT dpi = GetDpiForWindow(slider);
+        const auto scale = [dpi](int value) {
+            return std::max(1, MulDiv(value, static_cast<int>(dpi), 96));
+        };
+        const int center_y = (channel.top + channel.bottom) / 2;
+        const int thumb_x = (native_thumb.left + native_thumb.right) / 2;
+        const int half_track = scale(2);
+        const bool enabled = IsWindowEnabled(slider) != FALSE;
+        const COLORREF inactive_color = enabled ? ui::Theme::track_inactive
+                                                : ui::Theme::disabled_surface;
+        RECT inactive{channel.left, center_y - half_track,
+                      channel.right, center_y + half_track};
+        RECT active{channel.left, center_y - half_track,
+                    thumb_x, center_y + half_track};
+        ui::draw_panel(dc, inactive, inactive_color, inactive_color, scale(4));
         if (active.right > active.left) {
-            ui::draw_panel(dc, active, ui::Theme::primary, ui::Theme::primary, 4);
+            const COLORREF active_color = enabled ? ui::Theme::primary
+                                                  : ui::Theme::disabled_text;
+            ui::draw_panel(dc, active, active_color, active_color, scale(4));
         }
         const bool focused = GetFocus() == slider;
         const bool hovered = data != 0;
-        if (focused || hovered) {
+        const int halo_radius = scale(8);
+        const int thumb_radius = scale(6);
+        if (enabled && (focused || hovered)) {
             HBRUSH halo = CreateSolidBrush(ui::Theme::primary_soft);
             const auto old_halo = SelectObject(dc, halo);
             const auto old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
-            Ellipse(dc, thumb_x - 8, center_y - 8, thumb_x + 9, center_y + 9);
+            Ellipse(dc, thumb_x - halo_radius, center_y - halo_radius,
+                    thumb_x + halo_radius + 1, center_y + halo_radius + 1);
             SelectObject(dc, old_pen);
             SelectObject(dc, old_halo);
             DeleteObject(halo);
         }
-        HBRUSH thumb = CreateSolidBrush(ui::Theme::primary);
+        HBRUSH thumb = CreateSolidBrush(enabled ? ui::Theme::primary
+                                                : ui::Theme::disabled_text);
         const auto old_thumb = SelectObject(dc, thumb);
         const auto old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
-        Ellipse(dc, thumb_x - 6, center_y - 6, thumb_x + 7, center_y + 7);
+        Ellipse(dc, thumb_x - thumb_radius, center_y - thumb_radius,
+                thumb_x + thumb_radius + 1, center_y + thumb_radius + 1);
         SelectObject(dc, old_pen);
         SelectObject(dc, old_thumb);
         DeleteObject(thumb);
@@ -357,6 +412,7 @@ void create_controls(GuiState& gui) {
     gui.background_brush = CreateSolidBrush(ui::Theme::main_surface);
     gui.card_brush = CreateSolidBrush(ui::Theme::panel_surface);
     gui.sidebar_brush = CreateSolidBrush(ui::Theme::sidebar);
+    gui.profile_edit_brush = CreateSolidBrush(ui::Theme::sidebar_selected);
 
     gui.title = make_control(WS_CHILD | WS_VISIBLE, L"STATIC", L"Gamma Changer",
                              gui.window, kTitleLabel, 0, 0, 0, 0);
@@ -393,22 +449,23 @@ void create_controls(GuiState& gui) {
                                      WC_COMBOBOXW, nullptr, gui.window, kDisplayCombo,
                                      0, 0, 0, 0);
     SendMessageW(gui.display_combo, CB_SETMINVISIBLE, 8, 0);
-    gui.refresh_button = make_control(WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                                       L"BUTTON", L"", gui.window, kRefreshButton,
+    gui.refresh_button = make_control(WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+                                       L"BUTTON", L"Refresh displays", gui.window, kRefreshButton,
                                        0, 0, 0, 0);
 
-    gui.preset_save = make_control(WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+    gui.preset_save = make_control(WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
                                    L"BUTTON", L"+  New profile", gui.window,
                                    kPresetSave, 0, 0, 0, 0);
-    gui.preset_delete = make_control(WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+    gui.preset_delete = make_control(WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
                                      L"BUTTON", L"Delete profile", gui.window,
                                       kPresetDelete, 0, 0, 0, 0);
-    gui.profile_rename = make_control(WS_CHILD | ES_AUTOHSCROLL | WS_TABSTOP | WS_CLIPSIBLINGS,
-                                      L"EDIT", L"", gui.window, kProfileRename,
-                                      0, 0, 0, 0);
+    gui.profile_rename = make_control(WS_CHILD | ES_MULTILINE | ES_AUTOHSCROLL |
+                                          ES_NOHIDESEL | WS_TABSTOP | WS_CLIPSIBLINGS,
+                                       L"EDIT", L"", gui.window, kProfileRename,
+                                       0, 0, 0, 0);
     SendMessageW(gui.profile_rename, EM_SETLIMITTEXT, 48, 0);
     SetWindowSubclass(gui.profile_rename, profile_rename_proc, 1, 0);
-    gui.startup_button = make_control(WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+    gui.startup_button = make_control(WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
                                       L"BUTTON", L"Start with Windows", gui.window,
                                       kStartupToggle, 0, 0, 0, 0);
 
@@ -469,26 +526,32 @@ void create_controls(GuiState& gui) {
     if (FAILED(SetWindowTheme(gui.display_combo, L"Explorer", nullptr))) {
         log_message(LogLevel::warning, L"Could not apply the Explorer theme to the display list");
     }
-    const std::array<HWND, 13> themed_controls{
+    const std::array<HWND, 12> themed_controls{
         gui.gamma_slider, gui.brightness_slider, gui.contrast_slider,
         gui.r_gain_slider, gui.g_gain_slider, gui.b_gain_slider,
         gui.gamma_value, gui.brightness_value, gui.contrast_value,
         gui.r_gain_value, gui.g_gain_value, gui.b_gain_value,
-        gui.profile_rename,
     };
     for (HWND control : themed_controls) {
         if (FAILED(SetWindowTheme(control, L"Explorer", nullptr))) {
             log_message(LogLevel::warning, L"Could not apply the Explorer theme to a control");
         }
     }
+    // The inline rename editor is intentionally dark and lives in the custom
+    // Sidebar row host. Disable Explorer theming so Windows cannot reintroduce
+    // a light inset or border on a future theme repaint.
+    if (FAILED(SetWindowTheme(gui.profile_rename, L"", L""))) {
+        log_message(LogLevel::warning,
+                    L"Could not disable native theming for the Profile rename editor");
+    }
 
-    gui.apply_button = make_control(WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+    gui.apply_button = make_control(WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
                                      L"BUTTON", L"Saved", gui.window, kApplyButton,
                                     0, 0, 0, 0);
-    gui.reset_button = make_control(WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+    gui.reset_button = make_control(WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
                                      L"BUTTON", L"Restore defaults", gui.window, kResetButton,
                                     0, 0, 0, 0);
-    gui.before_after_button = make_control(WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+    gui.before_after_button = make_control(WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
                                             L"BUTTON", L"Hold original", gui.window,
                                             kBeforeAfter, 0, 0, 0, 0);
     SetWindowSubclass(gui.before_after_button, compare_proc, 1, 0);
@@ -538,8 +601,6 @@ void create_controls(GuiState& gui) {
         gui.r_gain_value, gui.g_gain_value, gui.b_gain_value,
     };
     for (HWND edit : numeric_edits) {
-        SendMessageW(edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
-                     MAKELPARAM(6, 6));
         SetWindowSubclass(edit, numeric_edit_proc, 1, 0);
     }
     const std::array<HWND, 6> sliders{

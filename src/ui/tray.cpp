@@ -2,7 +2,7 @@
 
 namespace gamma_changer {
 
-void add_tray_icon(HWND window) {
+bool add_tray_icon(HWND window) {
     NOTIFYICONDATAW data{};
     data.cbSize = sizeof(data);
     data.hWnd = window;
@@ -10,15 +10,20 @@ void add_tray_icon(HWND window) {
     data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     data.uCallbackMessage = kTrayMessage;
     data.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_MAIN_ICON));
+    if (!data.hIcon) {
+        log_message(LogLevel::warning, L"Could not load the system tray icon");
+        return false;
+    }
     wcscpy_s(data.szTip, L"Gamma Changer");
     if (!Shell_NotifyIconW(NIM_ADD, &data)) {
         log_message(LogLevel::warning, L"Could not add the system tray icon");
-        return;
+        return false;
     }
     data.uVersion = NOTIFYICON_VERSION_4;
     if (!Shell_NotifyIconW(NIM_SETVERSION, &data)) {
         log_message(LogLevel::warning, L"Could not enable the modern tray notification format");
     }
+    return true;
 }
 
 void remove_tray_icon(HWND window) {
@@ -27,6 +32,7 @@ void remove_tray_icon(HWND window) {
     data.hWnd = window;
     data.uID = kTrayId;
     Shell_NotifyIconW(NIM_DELETE, &data);
+    if (auto* gui = state(window)) gui->tray_available = false;
 }
 
 void show_main_window(HWND window) {
@@ -39,41 +45,43 @@ void show_main_window(HWND window) {
 
 bool apply_profile_from_tray(GuiState& gui, std::size_t index) {
     if (index >= gui.profiles.size()) return false;
-    if (gui.session.dirty) {
-        KillTimer(gui.window, kAutoSaveTimer);
-        if (!save_and_apply_current(gui, true)) {
-            show_main_window(gui.window);
-            return false;
-        }
-    }
-    const auto* display = selected_display(gui);
-    if (!display) {
-        set_status(gui, L"No display selected", StatusTone::warning);
+    if (!selected_display_ready(gui)) {
+        set_status(gui, L"This display is still being identified or restored",
+                   StatusTone::warning);
+        show_main_window(gui.window);
         return false;
     }
-
-    std::wstring error;
-    if (!gui.controller.apply_and_save(*display, gui.profiles[index].settings, error)) {
-        set_status(gui, L"Tray profile apply failed: " + error, StatusTone::error);
+    // Reuse the exact same transactional switch/undo path as a Profile-row click.
+    // A separate tray implementation previously left a stale Ctrl+Z snapshot.
+    select_preset(gui, index);
+    if (!gui.active_profile_linked || gui.active_preset != index) {
+        show_main_window(gui.window);
         return false;
     }
-    gui.active_preset = index;
-    gui.session.committed_settings = gui.profiles[index].settings;
-    set_params_to_controls(gui, gui.session.committed_settings);
-    gui.session.dirty = false;
-    EnableWindow(gui.apply_button, FALSE);
-    EnableWindow(gui.before_after_button, FALSE);
-    refresh_preset_buttons(gui);
-    remember_active_profile_for_display(gui, *display);
-    set_status(gui, gui.profiles[index].name + L" applied", StatusTone::success);
     log_message(LogLevel::info, L"Tray profile applied: " + gui.profiles[index].name);
     return true;
 }
 
-void show_tray_menu(HWND window) {
+void show_tray_menu(HWND window, const POINT* anchor) {
     auto* gui = state(window);
     HMENU menu = CreatePopupMenu();
     HMENU profiles = CreatePopupMenu();
+    if (!menu || !profiles) {
+        if (profiles) DestroyMenu(profiles);
+        if (menu) DestroyMenu(menu);
+        log_message(LogLevel::error, L"Could not create the system tray menu");
+        show_main_window(window);
+        return;
+    }
+    if (gui) {
+        if (const auto* display = selected_display(*gui)) {
+            std::wstring target = L"Target: ";
+            target += display->device_string.empty() ? display->device_name
+                                                     : display->device_string;
+            AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, target.c_str());
+            AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        }
+    }
     AppendMenuW(menu, MF_STRING, kTrayShowCommand, L"Show Window");
     if (gui) {
         for (std::size_t i = 0; i < gui->profiles.size(); ++i) {
@@ -83,7 +91,10 @@ void show_tray_menu(HWND window) {
                 name.insert(ampersand, 1, L'&');
                 ampersand += 2;
             }
-            const UINT flags = MF_STRING | (i == gui->active_preset ? MF_CHECKED : MF_UNCHECKED);
+            const UINT flags =
+                MF_STRING | (gui->active_profile_linked && i == gui->active_preset
+                                 ? MF_CHECKED
+                                 : MF_UNCHECKED);
             AppendMenuW(profiles, flags, kTrayProfileCommandBase + static_cast<UINT>(i),
                         name.c_str());
         }
@@ -95,7 +106,8 @@ void show_tray_menu(HWND window) {
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kTrayExitCommand, L"Exit");
     POINT point{};
-    GetCursorPos(&point);
+    if (anchor) point = *anchor;
+    else GetCursorPos(&point);
     SetForegroundWindow(window);
     const UINT command = TrackPopupMenuEx(menu,
                                           TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -56,6 +57,34 @@ bool same_settings(const CalibrationSettings& left, const CalibrationSettings& r
            std::abs(left.r_gain - right.r_gain) < epsilon &&
            std::abs(left.g_gain - right.g_gain) < epsilon &&
            std::abs(left.b_gain - right.b_gain) < epsilon;
+}
+
+std::wstring storage_stem(std::wstring value, std::uint64_t hash) {
+    for (auto& ch : value) {
+        if (ch == L'\\' || ch == L'/' || ch == L':' || ch == L'*' || ch == L'?' ||
+            ch == L'"' || ch == L'<' || ch == L'>' || ch == L'|') {
+            ch = L'_';
+        }
+    }
+    if (value.size() > 80) {
+        value.resize(80);
+        value += L"-" + std::to_wstring(hash);
+    }
+    return value;
+}
+
+std::wstring stable_storage_stem(const std::wstring& value) {
+    std::uint64_t hash = 1469598103934665603ull;
+    for (const wchar_t ch : value) {
+        hash ^= static_cast<std::uint64_t>(ch);
+        hash *= 1099511628211ull;
+    }
+    return storage_stem(value, hash);
+}
+
+std::wstring legacy_storage_stem(const std::wstring& value) {
+    return storage_stem(value,
+                        static_cast<std::uint64_t>(std::hash<std::wstring>{}(value)));
 }
 
 bool check_validation() {
@@ -134,18 +163,7 @@ bool check_store() {
 
     {
         const std::wstring long_id(120, L'X');
-        std::wstring legacy = long_id;
-        for (auto& ch : legacy) {
-            if (ch == L'\\' || ch == L'/' || ch == L':' || ch == L'*' || ch == L'?' ||
-                ch == L'"' || ch == L'<' || ch == L'>' || ch == L'|') {
-                ch = L'_';
-            }
-        }
-        const std::size_t legacy_hash = std::hash<std::wstring>{}(long_id);
-        if (legacy.size() > 80) {
-            legacy.resize(80);
-            legacy += L"-" + std::to_wstring(legacy_hash);
-        }
+        const std::wstring legacy = legacy_storage_stem(long_id);
         std::wofstream output(temporary.path / (legacy + L".profile"), std::ios::trunc);
         output << std::setprecision(17)
                << L"gamma " << settings.gamma << L'\n'
@@ -157,6 +175,26 @@ bool check_store() {
     }
     ok &= expect(same_settings(store.load_params(std::wstring(120, L'X')), settings),
                  L"legacy std::hash long-name settings must remain readable");
+
+    {
+        const std::wstring long_id(120, L'X');
+        const auto primary = temporary.path / (stable_storage_stem(long_id) + L".profile");
+        std::ofstream output(primary, std::ios::binary | std::ios::trunc);
+        output.put(static_cast<char>(0xff));
+    }
+    CalibrationSettings rejected{};
+    ok &= expect(!store.try_load_params(std::wstring(120, L'X'), rejected),
+                 L"a corrupt primary settings file must not revive legacy settings");
+
+    {
+        const std::wstring long_id(120, L'Y');
+        const auto legacy = temporary.path / (legacy_storage_stem(long_id) + L".profile");
+        std::ofstream output(legacy, std::ios::binary | std::ios::trunc);
+        output.seekp(64 * 1024);
+        output.put('\0');
+    }
+    ok &= expect(!store.try_load_params(std::wstring(120, L'Y'), rejected),
+                 L"oversized legacy settings must be rejected before migration fallback");
 
     {
         std::wofstream output(temporary.path / L"partial.profile", std::ios::trunc);
@@ -206,6 +244,40 @@ bool check_store() {
     ok &= expect(!store.load_base_ramp(L"oversized", loaded),
                  L"oversized base ramp must be rejected");
 
+    {
+        const std::wstring long_id(120, L'R');
+        const auto legacy = temporary.path / L"ramps" /
+                            (legacy_storage_stem(long_id) + L".ramp");
+        std::ofstream output(legacy, std::ios::binary | std::ios::trunc);
+        output.write(reinterpret_cast<const char*>(ramp.channel[0].data()),
+                     sizeof(ramp.channel));
+    }
+    ok &= expect(store.load_base_ramp(std::wstring(120, L'R'), loaded) &&
+                     loaded.channel == ramp.channel,
+                 L"legacy std::hash long-name base ramps must remain readable");
+    {
+        const std::wstring long_id(120, L'R');
+        const auto primary = temporary.path / L"ramps" /
+                             (stable_storage_stem(long_id) + L".ramp");
+        std::error_code directory_error;
+        std::filesystem::create_directory(primary, directory_error);
+        ok &= expect(!directory_error,
+                     L"the unreadable-primary ramp fixture must be created");
+    }
+    ok &= expect(!store.load_base_ramp(std::wstring(120, L'R'), loaded),
+                 L"an unreadable primary ramp must not revive a legacy ramp");
+
+    {
+        const std::wstring long_id(120, L'S');
+        const auto legacy = temporary.path / L"ramps" /
+                            (legacy_storage_stem(long_id) + L".ramp");
+        std::ofstream output(legacy, std::ios::binary | std::ios::trunc);
+        output.seekp(4096);
+        output.put('\0');
+    }
+    ok &= expect(!store.load_base_ramp(std::wstring(120, L'S'), loaded),
+                 L"oversized legacy base ramps must be rejected before migration fallback");
+
     std::array<PresetSlot, kPresetCount> presets{};
     presets[0] = {true, L"Test Profile", settings};
     ok &= expect(store.save_presets(presets, error), L"legacy presets must save atomically");
@@ -231,6 +303,14 @@ bool check_store() {
         error.clear();
         ok &= expect(!store.save_presets(long_name_presets, error),
                      L"save_presets must reject overlong profile names");
+    }
+    {
+        std::array<PresetSlot, kPresetCount> unused_name_presets{};
+        unused_name_presets[0].name = std::wstring(256, L'X');
+        error.clear();
+        ok &= expect(store.save_presets(unused_name_presets, error) &&
+                         store.load_presets()[0].name.empty(),
+                     L"unoccupied legacy slots must not serialize stale names");
     }
 
     const auto empty_presets = [&] {
@@ -309,7 +389,40 @@ bool check_store() {
                                     std::istreambuf_iterator<wchar_t>());
     }
     ok &= expect(still_valid_contents == valid_contents,
-                 L"rejected profile writes must leave the previous file intact");
+                  L"rejected profile writes must leave the previous file intact");
+
+    {
+        std::vector<Profile> too_many_profiles;
+        too_many_profiles.reserve(1025);
+        for (std::size_t i = 0; i < 1025; ++i) {
+            too_many_profiles.push_back(
+                {L"bulk-" + std::to_wstring(i), L"Bulk profile", settings, true});
+        }
+        error.clear();
+        ok &= expect(!store.save_profiles(too_many_profiles, error),
+                     L"profile writes beyond the loader row limit must be rejected");
+
+        std::vector<Profile> newline_id = profiles;
+        newline_id.front().id = L"invalid\nprofile";
+        error.clear();
+        ok &= expect(!store.save_profiles(newline_id, error),
+                     L"profile ids containing line breaks must be rejected");
+
+        std::vector<Profile> newline_name = profiles;
+        newline_name.front().name = L"invalid\nname";
+        error.clear();
+        ok &= expect(!store.save_profiles(newline_name, error),
+                     L"profile names containing record separators must be rejected");
+
+        std::vector<Profile> oversized_profile{
+            {L"oversized", std::wstring(4 * 1024 * 1024, L'n'), settings, true}};
+        error.clear();
+        ok &= expect(!store.save_profiles(oversized_profile, error),
+                     L"profile writes beyond the loader byte limit must be rejected");
+        ok &= expect(store.load_profiles(loaded_profiles) == ProfileLoadStatus::loaded &&
+                         loaded_profiles.size() == profiles.size(),
+                     L"rejected profile boundary writes must preserve the prior file");
+    }
 
     const std::wstring unicode_name = L"\x4e2d\x6587\x914d\x7f6e \xD83D\xDE00";
     const std::vector<Profile> unicode_profiles{{L"unicode-id", unicode_name, settings, true}};
@@ -329,8 +442,10 @@ bool check_store() {
     error.clear();
     ok &= expect(store.save_profile_preferences(preferences, error),
                  L"display profile preferences must save");
-    const auto loaded_preferences = store.load_profile_preferences();
-    ok &= expect(loaded_preferences.size() == 2 &&
+    std::vector<DisplayProfilePreference> loaded_preferences;
+    ok &= expect(store.load_profile_preferences(loaded_preferences) ==
+                     ProfileLoadStatus::loaded &&
+                     loaded_preferences.size() == 2 &&
                      loaded_preferences[0].display_id == L"display-a" &&
                      loaded_preferences[0].profile_id == L"unicode-id" &&
                      loaded_preferences[1].display_id == L"\x663e\x793a\x5668",
@@ -342,9 +457,57 @@ bool check_store() {
         error.clear();
         ok &= expect(!store.save_profile_preferences(duplicate, error),
                      L"duplicate display profile preferences must be rejected");
-        ok &= expect(store.load_profile_preferences().size() == 2,
-                     L"rejected preference writes must leave the previous file intact");
+        loaded_preferences.clear();
+        ok &= expect(store.load_profile_preferences(loaded_preferences) ==
+                         ProfileLoadStatus::loaded &&
+                         loaded_preferences.size() == 2,
+                      L"rejected preference writes must leave the previous file intact");
     }
+
+    {
+        std::vector<DisplayProfilePreference> too_many_preferences;
+        too_many_preferences.reserve(1025);
+        for (std::size_t i = 0; i < 1025; ++i) {
+            too_many_preferences.push_back(
+                {L"display-" + std::to_wstring(i), L"unicode-id"});
+        }
+        error.clear();
+        ok &= expect(!store.save_profile_preferences(too_many_preferences, error),
+                     L"preference writes beyond the loader row limit must be rejected");
+
+        const std::wstring large_field(40 * 1024, L'x');
+        const std::vector<DisplayProfilePreference> oversized_preferences{
+            {L"display-large-a", large_field},
+            {L"display-large-b", large_field},
+        };
+        error.clear();
+        ok &= expect(!store.save_profile_preferences(oversized_preferences, error),
+                     L"preference writes beyond the loader byte limit must be rejected");
+        loaded_preferences.clear();
+        ok &= expect(store.load_profile_preferences(loaded_preferences) ==
+                         ProfileLoadStatus::loaded &&
+                         loaded_preferences.size() == preferences.size(),
+                      L"rejected preference boundary writes must preserve the prior file");
+    }
+
+    {
+        std::wofstream output(temporary.path / L"profile_preferences.v1", std::ios::trunc);
+        output << L"GammaChangerProfilePreferences 1\n\"display-a\"";
+        output.close();
+        loaded_preferences.clear();
+        ok &= expect(store.load_profile_preferences(loaded_preferences) ==
+                         ProfileLoadStatus::corrupt && loaded_preferences.empty(),
+                     L"damaged preference files must be reported instead of treated as empty");
+    }
+    {
+        std::wofstream output(temporary.path / L"profile_preferences.v1", std::ios::trunc);
+        output << L"GammaChangerProfilePreferences 1\n"
+                  L"\"display\tname\" \"profile-id\"\n";
+    }
+    loaded_preferences.clear();
+    ok &= expect(store.load_profile_preferences(loaded_preferences) ==
+                     ProfileLoadStatus::corrupt,
+                 L"quoted preference fields containing record separators must be rejected");
 
     {
         std::wofstream output(temporary.path / L"profiles.v1", std::ios::trunc);
@@ -356,6 +519,15 @@ bool check_store() {
     ok &= expect(store.load_profiles(loaded_profiles) == ProfileLoadStatus::corrupt &&
                      loaded_profiles.empty(),
                  L"damaged profiles must be reported without partial recovery");
+
+    {
+        std::wofstream output(temporary.path / L"profiles.v1", std::ios::trunc);
+        output << L"GammaChangerProfiles 1\n"
+                  L"\"valid\" \"Invalid\tName\" 1 1 0 1 1 1 1\n";
+    }
+    loaded_profiles.clear();
+    ok &= expect(store.load_profiles(loaded_profiles) == ProfileLoadStatus::corrupt,
+                 L"quoted Profile fields containing record separators must be rejected");
 
     {
         std::wofstream output(temporary.path / L"profiles.v1", std::ios::trunc);
@@ -376,7 +548,6 @@ bool check_store() {
         output.seekp(64 * 1024);
         output.put('\0');
     }
-    CalibrationSettings rejected{};
     ok &= expect(!store.try_load_params(L"oversized", rejected),
                  L"oversized per-display settings must be rejected");
 
@@ -413,6 +584,17 @@ bool check_profile_list_logic() {
                  L"next_profile_id must skip existing ids");
     ok &= expect(next_custom_profile_name(profiles) == L"Custom 3",
                  L"next_custom_profile_name must skip existing names");
+    std::vector<DisplayProfilePreference> orphan_preferences{
+        {L"display-a", L"profile-1"},
+        {L"display-b", L"profile-3"},
+    };
+    ok &= expect(remove_orphan_profile_preferences(orphan_preferences, profiles) &&
+                     orphan_preferences.size() == 1 &&
+                     orphan_preferences.front().display_id == L"display-a" &&
+                     orphan_preferences.front().profile_id == L"profile-1",
+                 L"unknown Profile associations must be removed before IDs can be reused");
+    ok &= expect(!remove_orphan_profile_preferences(orphan_preferences, profiles),
+                 L"filtering an already valid preference collection must be stable");
     ok &= expect(active_index_after_delete(5, 2, 4) == 3,
                  L"deleting before the active profile must shift the index left");
     ok &= expect(active_index_after_delete(5, 4, 4) == 3,
@@ -421,14 +603,29 @@ bool check_profile_list_logic() {
                  L"deleting after the active profile must keep its index");
     ok &= expect(active_index_after_delete(1, 0, 0) == 0,
                  L"deleting the only profile must fall back to index zero");
-    ok &= expect(clamp_profile_scroll(-10, 10, 36, 142) == 0,
+    ok &= expect(clamp_profile_scroll(-10, 10, 36, 34, 142) == 0,
                  L"negative profile scroll must clamp to zero");
-    ok &= expect(clamp_profile_scroll(1000, 10, 36, 142) == 218,
+    ok &= expect(clamp_profile_scroll(1000, 10, 36, 34, 142) == 216,
                  L"profile scroll must clamp to the last full row");
     ok &= expect(profile_scroll_to_show(9, 10, 0, 279, 421, 36, 34) == 216,
                  L"scroll-to-show must bring the last row into view");
     ok &= expect(profile_scroll_to_show(0, 10, 216, 279, 421, 36, 34) == 0,
                  L"scroll-to-show must bring the first row back into view");
+    ok &= expect(profile_scroll_to_show(9, 10, 216, 558, 842, 72, 68) == 432,
+                 L"an active rename must remain visible after a DPI transition");
+
+    const ProfileRenameGeometry rename_96 =
+        make_profile_rename_geometry(30, 279, 204, 34, 14, 4, 16);
+    ok &= expect(rename_96.x + rename_96.format_left == 44,
+                 L"96-DPI rename text must share the Profile label x origin");
+    ok &= expect(rename_96.y + rename_96.format_top == 288,
+                 L"96-DPI rename text must be vertically centered in its row");
+    const ProfileRenameGeometry rename_150 =
+        make_profile_rename_geometry(45, 419, 306, 51, 21, 6, 20);
+    ok &= expect(rename_150.x + rename_150.format_left == 66,
+                 L"high-DPI rename text must preserve the scaled label inset");
+    ok &= expect(std::abs((rename_150.y + rename_150.format_top) - 434) <= 1,
+                 L"high-DPI rename text must preserve the centered baseline");
 
     CalibrationSession session;
     ok &= expect(!session.undo_applies_to(L"display-1"),
@@ -443,8 +640,30 @@ bool check_profile_list_logic() {
     ok &= expect(!session.dirty, L"mark_clean must clear the dirty flag");
     session.clear_undo();
     ok &= expect(!session.profile_switch_undo_available &&
-                     session.undo_display_id.empty(),
-                 L"clear_undo must clear the whole undo snapshot");
+                      session.undo_display_id.empty(),
+                  L"clear_undo must clear the whole undo snapshot");
+
+    DisplayInfo previous;
+    previous.device_name = L"\\\\.\\DISPLAY1";
+    previous.stable_id = L"monitor-a";
+    DisplayInfo replacement = previous;
+    replacement.stable_id = L"monitor-b";
+    ok &= expect(!matches_previous_display(previous, replacement),
+                 L"a reused GDI name must not replace a known stable identity");
+    replacement.device_name = L"\\\\.\\DISPLAY7";
+    replacement.stable_id = previous.stable_id;
+    ok &= expect(matches_previous_display(previous, replacement),
+                 L"a stable identity must survive GDI display renumbering");
+    previous.stable_id.clear();
+    replacement.device_name = previous.device_name;
+    replacement.stable_id = L"monitor-a";
+    ok &= expect(matches_previous_display(previous, replacement),
+                 L"a device-name identity may upgrade to a stable identity");
+    ok &= expect(is_display_identity_upgrade(previous, replacement),
+                 L"device-name to stable-id promotion must be recognized as an identity upgrade");
+    previous.stable_id = L"monitor-a";
+    ok &= expect(!is_display_identity_upgrade(previous, replacement),
+                 L"an already stable identity must not be treated as another upgrade");
     return ok;
 }
 
@@ -473,12 +692,14 @@ bool check_profile_migration() {
     {
         std::vector<Profile> replaced = manager.profiles();
         replaced[0].name = L"Default Renamed";
+        replaced[0].settings.gamma = 2.0;
         ok &= expect(manager.replace_profiles(replaced, error),
-                     L"replace_profiles must persist the whole profile collection");
+                     L"replace_profiles must persist a valid profile collection");
         profiles.clear();
         ok &= expect(store.load_profiles(profiles) == ProfileLoadStatus::loaded &&
-                         !profiles.empty() && profiles[0].name == L"Default Renamed",
-                     L"replace_profiles must round-trip the updated collection");
+                         !profiles.empty() && profiles[0].name == L"Default" &&
+                         same_settings(profiles[0].settings, default_params()),
+                     L"replace_profiles must keep the built-in Default profile immutable");
     }
 
     {
@@ -493,6 +714,51 @@ bool check_profile_migration() {
                      legacy_fallback[1].name == L"Legacy Gaming" &&
                      same_settings(legacy_fallback[1].params, settings),
                  L"legacy presets must remain available when profiles.v1 is corrupt");
+
+    {
+        ProfileStore repair_store(temporary.path / L"repair-incomplete");
+        const std::vector<Profile> incomplete{
+            {L"custom-only", L"Custom only", settings, true}};
+        error.clear();
+        ok &= expect(repair_store.save_profiles(incomplete, error),
+                     L"incomplete profile fixture must save");
+        ProfileManager repair_manager(repair_store);
+        ok &= expect(repair_manager.load(error),
+                     L"missing built-in profiles must be repaired atomically");
+        profiles.clear();
+        ok &= expect(repair_store.load_profiles(profiles) == ProfileLoadStatus::loaded &&
+                         profiles.size() == kPresetCount + 2 &&
+                         std::any_of(profiles.begin(), profiles.end(),
+                                     [](const Profile& profile) {
+                                         return profile.id == L"builtin-default";
+                                     }),
+                     L"the repaired profile invariants must persist to disk");
+    }
+    {
+        ProfileStore repair_store(temporary.path / L"repair-default");
+        CalibrationSettings changed_default = default_params();
+        changed_default.gamma = 2.0;
+        const std::vector<Profile> modified_builtin{
+            {L"builtin-default", L"Modified Default", changed_default, false}};
+        error.clear();
+        ok &= expect(repair_store.save_profiles(modified_builtin, error),
+                     L"modified built-in fixture must save through the low-level store");
+        ProfileManager repair_manager(repair_store);
+        ok &= expect(repair_manager.load(error),
+                     L"ProfileManager must repair a modified built-in Default");
+        profiles.clear();
+        ok &= expect(repair_store.load_profiles(profiles) == ProfileLoadStatus::loaded,
+                     L"the repaired built-in Default must persist");
+        const auto builtin = std::find_if(
+            profiles.begin(), profiles.end(),
+            [](const Profile& profile) {
+                return profile.id == L"builtin-default";
+            });
+        ok &= expect(builtin != profiles.end() && builtin->name == L"Default" &&
+                         builtin->saved &&
+                         same_settings(builtin->settings, default_params()),
+                     L"the built-in Default must remain neutral and immutable");
+    }
     return ok;
 }
 

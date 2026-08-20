@@ -79,4 +79,24 @@ inline std::wstring display_storage_id(const DisplayInfo& display) {
     return display.stable_id.empty() ? display.device_name : display.stable_id;
 }
 
+// Directional identity comparison used while refreshing the display topology.
+// Once Windows has supplied a stable monitor path for the previous display, a
+// reused GDI name (for example \\.\DISPLAY1) must never make a different panel
+// look like the same device. The GDI-name fallback is only valid when the
+// previous identity never had a stable path.
+inline bool matches_previous_display(const DisplayInfo& previous,
+                                     const DisplayInfo& candidate) {
+    if (!previous.stable_id.empty()) {
+        return !candidate.stable_id.empty() &&
+               previous.stable_id == candidate.stable_id;
+    }
+    return previous.device_name == candidate.device_name;
+}
+
+inline bool is_display_identity_upgrade(const DisplayInfo& previous,
+                                        const DisplayInfo& candidate) {
+    return previous.stable_id.empty() && !candidate.stable_id.empty() &&
+           previous.device_name == candidate.device_name;
+}
+
 }  // namespace gamma_changer

@@ -211,13 +211,15 @@ std::vector<DisplayInfo> DisplayManager::enumerate() {
 }
 
 bool DisplayManager::read_ramp(const DisplayInfo& display, GammaRamp& ramp, std::wstring& error) {
+    SetLastError(ERROR_SUCCESS);
     HDC raw = CreateDCW(L"DISPLAY", display.device_name.c_str(), nullptr, nullptr);
     if (raw == nullptr) {
         error = last_error_message(L"CreateDCW");
-        log_message(LogLevel::error, error);
+        log_message(LogLevel::error, error + display_context(display));
         return false;
     }
     HdcGuard guard(raw);
+    SetLastError(ERROR_SUCCESS);
     if (!GetDeviceGammaRamp(guard.get(), ramp.channel[0].data())) {
         error = last_error_message(L"GetDeviceGammaRamp");
         log_message(LogLevel::error, error + display_context(display));
@@ -227,13 +229,15 @@ bool DisplayManager::read_ramp(const DisplayInfo& display, GammaRamp& ramp, std:
 }
 
 bool DisplayManager::write_ramp(const DisplayInfo& display, const GammaRamp& ramp, std::wstring& error) {
+    SetLastError(ERROR_SUCCESS);
     HDC raw = CreateDCW(L"DISPLAY", display.device_name.c_str(), nullptr, nullptr);
     if (raw == nullptr) {
         error = last_error_message(L"CreateDCW");
-        log_message(LogLevel::error, error);
+        log_message(LogLevel::error, error + display_context(display));
         return false;
     }
     HdcGuard guard(raw);
+    SetLastError(ERROR_SUCCESS);
     if (!SetDeviceGammaRamp(guard.get(), const_cast<std::uint16_t*>(ramp.channel[0].data()))) {
         error = last_error_message(L"SetDeviceGammaRamp");
         log_message(LogLevel::error, error + display_context(display));

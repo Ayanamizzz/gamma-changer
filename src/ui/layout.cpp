@@ -39,7 +39,18 @@ void layout_controls(GuiState& gui, int width, int height) {
     const int profile_visible_height = profile_list_bottom - profile_first_y;
     gui.profile_scroll_offset =
         clamp_profile_scroll(gui.profile_scroll_offset, gui.profiles.size(),
-                             profile_row_stride, profile_visible_height);
+                             profile_row_stride, profile_row_height,
+                             profile_visible_height);
+    if (gui.renaming_preset != kNoProfile &&
+        gui.renaming_preset < gui.profiles.size()) {
+        // Scroll offsets are physical pixels. A per-monitor DPI transition can
+        // otherwise leave the active editor outside the new viewport even
+        // though its old offset still passes the generic clamp.
+        gui.profile_scroll_offset = profile_scroll_to_show(
+            gui.renaming_preset, gui.profiles.size(), gui.profile_scroll_offset,
+            profile_first_y, profile_list_bottom, profile_row_stride,
+            profile_row_height);
+    }
     ensure_profile_buttons(gui);
     for (std::size_t i = 0; i < gui.profiles.size(); ++i) {
         const int row_y = profile_first_y +
@@ -53,26 +64,36 @@ void layout_controls(GuiState& gui, int width, int height) {
     }
     if (gui.profile_rename && gui.renaming_preset != kNoProfile &&
         gui.renaming_preset < gui.profiles.size()) {
-        const int edit_x = profile_content_x;
-        const int edit_y = profile_first_y +
-                           static_cast<int>(gui.renaming_preset) * profile_row_stride -
-                           gui.profile_scroll_offset;
-        const int edit_width = profile_content_width;
-        const int edit_height = profile_row_height;
-        MoveWindow(gui.profile_rename, edit_x, edit_y, edit_width, edit_height, TRUE);
-        // Match the profile-row geometry exactly: same rounded corners and the
-        // same 14 px text inset as the owner-drawn button label.
-        SetWindowRgn(gui.profile_rename,
-                     CreateRoundRectRgn(0, 0, edit_width + 1, edit_height + 1,
-                                        scale(ui::Metrics::control_radius),
-                                        scale(ui::Metrics::control_radius)),
-                     TRUE);
-        const int text_inset = scale(ui::Metrics::profile_text_inset);
-        SendMessageW(gui.profile_rename, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
-                     MAKELPARAM(text_inset, text_inset));
-        RECT format{text_inset, 0, edit_width - text_inset, edit_height};
+        const int row_y = profile_first_y +
+                          static_cast<int>(gui.renaming_preset) * profile_row_stride -
+                          gui.profile_scroll_offset;
+        const bool row_visible = row_y + profile_row_height > profile_first_y &&
+                                 row_y < profile_list_bottom;
+        int line_height = scale(16);
+        if (HDC edit_dc = GetDC(gui.profile_rename)) {
+            HFONT font = reinterpret_cast<HFONT>(
+                SendMessageW(gui.profile_rename, WM_GETFONT, 0, 0));
+            HGDIOBJ old_font = font ? SelectObject(edit_dc, font) : nullptr;
+            TEXTMETRICW metrics{};
+            if (GetTextMetricsW(edit_dc, &metrics)) {
+                line_height = metrics.tmHeight;
+            }
+            if (old_font) SelectObject(edit_dc, old_font);
+            ReleaseDC(gui.profile_rename, edit_dc);
+        }
+        const ProfileRenameGeometry edit = make_profile_rename_geometry(
+            profile_content_x, row_y, profile_content_width, profile_row_height,
+            scale(ui::Metrics::profile_text_inset), scale(4), line_height);
+        MoveWindow(gui.profile_rename, edit.x, edit.y, edit.width, edit.height, TRUE);
+        // EM_SETRECT is honored because the editor is multiline. Do not also
+        // apply EM_SETMARGINS: that would shift the text origin twice.
+        SendMessageW(gui.profile_rename, EM_SETMARGINS,
+                     EC_LEFTMARGIN | EC_RIGHTMARGIN, 0);
+        RECT format{edit.format_left, edit.format_top,
+                    edit.format_right, edit.format_bottom};
         SendMessageW(gui.profile_rename, EM_SETRECT, 0,
                      reinterpret_cast<LPARAM>(&format));
+        ShowWindow(gui.profile_rename, row_visible ? SW_SHOW : SW_HIDE);
     }
     const int profile_save_y = profile_list_bottom + scale(ui::Metrics::profile_action_gap);
     const int delete_width = scale(42);
@@ -117,12 +138,23 @@ void layout_controls(GuiState& gui, int width, int height) {
     place_row(gui.r_gain_label, gui.r_gain_slider, gui.r_gain_value, 530);
     place_row(gui.g_gain_label, gui.g_gain_slider, gui.g_gain_value, 574);
     place_row(gui.b_gain_label, gui.b_gain_slider, gui.b_gain_value, 618);
+    const std::array<HWND, 6> numeric_edits{
+        gui.gamma_value, gui.brightness_value, gui.contrast_value,
+        gui.r_gain_value, gui.g_gain_value, gui.b_gain_value,
+    };
+    for (HWND edit : numeric_edits) {
+        SendMessageW(edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
+                     MAKELPARAM(scale(6), scale(6)));
+    }
 
     const int footer_y = height - scale(58);
-    MoveWindow(gui.status, main_x + scale(18), footer_y + scale(9),
-               std::max(scale(160), main_width - scale(300)), scale(26), TRUE);
+    const int status_x = main_x + scale(18);
+    const int before_after_x = main_right - scale(378);
+    const int status_width = std::max(0, before_after_x - scale(8) - status_x);
+    MoveWindow(gui.status, status_x, footer_y + scale(9),
+               status_width, scale(26), TRUE);
     MoveWindow(gui.reset_button, main_right - scale(254), footer_y + scale(2), scale(104), scale(36), TRUE);
-    MoveWindow(gui.before_after_button, main_right - scale(378), footer_y + scale(2),
+    MoveWindow(gui.before_after_button, before_after_x, footer_y + scale(2),
                scale(112), scale(36), TRUE);
     MoveWindow(gui.apply_button, main_right - scale(138), footer_y + scale(2), scale(138), scale(36), TRUE);
 }

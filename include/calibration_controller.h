@@ -36,6 +36,10 @@ public:
     bool preview(const DisplayInfo& display, const CalibrationSettings& settings,
                  std::wstring& error);
     bool cancel_preview(const DisplayInfo& display, std::wstring& error);
+    void abandon_preview_for_offline_display(const DisplayInfo& display);
+    bool migrate_display_identity(const DisplayInfo& previous,
+                                  const DisplayInfo& current,
+                                  std::wstring& error);
     bool apply_and_save(const DisplayInfo& display, const CalibrationSettings& settings,
                         std::wstring& error);
     CommitResult commit(const DisplayInfo& display, const CalibrationSettings& settings);

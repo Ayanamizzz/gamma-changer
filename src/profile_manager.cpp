@@ -67,16 +67,28 @@ bool ProfileManager::load(std::wstring& error) {
         return false;
     }
 
+    bool repaired = false;
     if (!find_profile(kDefaultProfileId)) {
         profiles_.insert(profiles_.begin(), default_profile());
+        repaired = true;
+    } else if (Profile* builtin = find_profile(kDefaultProfileId);
+               builtin->name != L"Default" ||
+               !settings_equal(builtin->settings, default_params()) ||
+               !builtin->saved) {
+        *builtin = default_profile();
+        repaired = true;
     }
     for (std::size_t index = 0; index < kPresetCount; ++index) {
         if (find_profile(legacy_id(index))) continue;
         profiles_.push_back({legacy_id(index),
                              L"Default " + std::to_wstring(index + 1),
                              default_params(), false});
+        repaired = true;
     }
-    return true;
+    if (!repaired) return true;
+    if (store_.save_profiles(profiles_, error)) return true;
+    error = L"the profile collection was incomplete and could not be repaired: " + error;
+    return false;
 }
 
 std::array<PresetSlot, kPresetCount> ProfileManager::legacy_slots() const {
@@ -93,8 +105,17 @@ std::array<PresetSlot, kPresetCount> ProfileManager::legacy_slots() const {
 
 bool ProfileManager::replace_profiles(const std::vector<Profile>& profiles,
                                       std::wstring& error) {
-    if (!store_.save_profiles(profiles, error)) return false;
-    profiles_ = profiles;
+    std::vector<Profile> normalized = profiles;
+    const auto builtin = std::find_if(
+        normalized.begin(), normalized.end(),
+        [](const Profile& profile) { return profile.id == kDefaultProfileId; });
+    if (builtin == normalized.end()) {
+        error = L"the built-in Default profile cannot be removed";
+        return false;
+    }
+    *builtin = default_profile();
+    if (!store_.save_profiles(normalized, error)) return false;
+    profiles_ = std::move(normalized);
     return true;
 }
 

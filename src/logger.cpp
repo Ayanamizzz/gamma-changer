@@ -5,6 +5,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <sstream>
+#include <vector>
 
 namespace gamma_changer {
 namespace {
@@ -19,7 +21,7 @@ class LogWriteLock {
 public:
     LogWriteLock() : mutex_(log_write_mutex()) {
         if (mutex_ != nullptr) {
-            const DWORD wait = WaitForSingleObject(mutex_, INFINITE);
+            const DWORD wait = WaitForSingleObject(mutex_, 250);
             locked_ = wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED;
         }
     }
@@ -28,6 +30,7 @@ public:
     }
     LogWriteLock(const LogWriteLock&) = delete;
     LogWriteLock& operator=(const LogWriteLock&) = delete;
+    bool acquired() const { return locked_; }
 
 private:
     HANDLE mutex_ = nullptr;
@@ -35,17 +38,25 @@ private:
 };
 
 std::filesystem::path log_path() {
-    wchar_t buffer[MAX_PATH]{};
-    const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", buffer, MAX_PATH);
-    if (length > 0 && length < MAX_PATH) {
-        const auto root = std::filesystem::path(buffer) / L"GammaChangerCpp";
-        std::error_code ignored;
-        std::filesystem::create_directories(root, ignored);
-        return root / L"gamma-changer.log";
+    const DWORD required = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
+    if (required > 1) {
+        std::vector<wchar_t> buffer(required, L'\0');
+        const DWORD length = GetEnvironmentVariableW(
+            L"LOCALAPPDATA", buffer.data(), static_cast<DWORD>(buffer.size()));
+        const auto root = length > 0 && length < buffer.size()
+                              ? std::filesystem::path(std::wstring(buffer.data(), length)) /
+                                    L"GammaChangerCpp"
+                              : std::filesystem::path{};
+        if (!root.empty()) {
+            std::error_code ignored;
+            std::filesystem::create_directories(root, ignored);
+            return root / L"gamma-changer.log";
+        }
     }
-    const DWORD temp_length = GetTempPathW(MAX_PATH, buffer);
-    if (temp_length > 0 && temp_length < MAX_PATH) {
-        const auto root = std::filesystem::path(buffer) / L"GammaChangerCpp";
+    std::error_code temp_error;
+    const auto temp = std::filesystem::temp_directory_path(temp_error);
+    if (!temp_error) {
+        const auto root = temp / L"GammaChangerCpp";
         std::error_code ignored;
         std::filesystem::create_directories(root, ignored);
         return root / L"gamma-changer.log";
@@ -61,6 +72,20 @@ std::filesystem::path log_path() {
     return L"gamma-changer.log";
 }
 
+std::string to_utf8(const std::wstring& value) {
+    if (value.empty()) return {};
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, value.data(),
+                                          static_cast<int>(value.size()),
+                                          nullptr, 0, nullptr, nullptr);
+    if (bytes <= 0) return {};
+    std::string result(static_cast<std::size_t>(bytes), '\0');
+    if (WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
+                            result.data(), bytes, nullptr, nullptr) != bytes) {
+        return {};
+    }
+    return result;
+}
+
 const wchar_t* level_name(LogLevel level) {
     switch (level) {
     case LogLevel::info: return L"INFO";
@@ -74,6 +99,7 @@ const wchar_t* level_name(LogLevel level) {
 
 void log_message(LogLevel level, const std::wstring& message) {
     LogWriteLock lock;
+    if (!lock.acquired()) return;
     const auto path = log_path();
     std::error_code ignored;
     const auto size = std::filesystem::file_size(path, ignored);
@@ -86,15 +112,19 @@ void log_message(LogLevel level, const std::wstring& message) {
             std::filesystem::resize_file(path, 0, ignored);
         }
     }
-    std::wofstream output(path, std::ios::app);
-    if (!output) return;
     SYSTEMTIME time{};
     GetLocalTime(&time);
-    output << std::setfill(L'0') << std::setw(4) << time.wYear << L'-'
-           << std::setw(2) << time.wMonth << L'-' << std::setw(2) << time.wDay << L' '
-           << std::setw(2) << time.wHour << L':' << std::setw(2) << time.wMinute << L':'
-           << std::setw(2) << time.wSecond << L" [" << level_name(level) << L"] "
-           << message << L'\n';
+    std::wostringstream line;
+    line << std::setfill(L'0') << std::setw(4) << time.wYear << L'-'
+         << std::setw(2) << time.wMonth << L'-' << std::setw(2) << time.wDay << L' '
+         << std::setw(2) << time.wHour << L':' << std::setw(2) << time.wMinute << L':'
+         << std::setw(2) << time.wSecond << L" [" << level_name(level) << L"] "
+         << message << L'\n';
+    const std::string bytes = to_utf8(line.str());
+    if (bytes.empty()) return;
+    std::ofstream output(path, std::ios::binary | std::ios::app);
+    if (!output) return;
+    output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
 }
 
 }  // namespace gamma_changer

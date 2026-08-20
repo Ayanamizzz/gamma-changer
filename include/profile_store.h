@@ -32,7 +32,8 @@ public:
     ProfileLoadStatus load_profiles(std::vector<Profile>& profiles) const;
     bool save_profiles(const std::vector<Profile>& profiles, std::wstring& error) const;
 
-    std::vector<DisplayProfilePreference> load_profile_preferences() const;
+    ProfileLoadStatus load_profile_preferences(
+        std::vector<DisplayProfilePreference>& preferences) const;
     bool save_profile_preferences(
         const std::vector<DisplayProfilePreference>& preferences,
         std::wstring& error) const;

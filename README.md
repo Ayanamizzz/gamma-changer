@@ -4,7 +4,7 @@ Gamma Changer is a native Windows desktop utility for adjusting the software gam
 each connected display. It provides a modern, high-DPI Win32 interface with per-monitor
 settings, a scrollable profile list, direct numeric input, and a live tone-response preview.
 
-Current version: **2.4.0**
+Current version: **2.4.1**
 
 ## Features
 
@@ -29,6 +29,10 @@ DDC/CI implementation.
 HDR, Advanced Color, graphics-driver behavior, color-management software, games, and protected
 video paths may override or bypass a software gamma ramp. The application reports compatible
 driver failures but cannot force unsupported display pipelines to accept calibration.
+
+The current adjustment curve is an absolute software LUT; it is not yet composed with an ICC or
+colorimeter LUT. Applying an adjustment can replace another calibration tool's active ramp, and
+**Restore defaults** currently writes a neutral LUT rather than reconstructing an ICC calibration.
 
 ## Requirements
 
@@ -79,6 +83,8 @@ return the selected display to a neutral LUT.
 - Left-clicking the tray icon restores the window.
 - Right-clicking the tray icon provides profile switching, Show Window, and Exit commands.
 - Closing the main window exits the application completely.
+- Profile rows support Arrow/Home/End navigation, `F2` to rename, and `Delete` to remove.
+- `Ctrl+Z` restores the previous profile adjustment when an undo snapshot is available.
 
 ## Local data
 

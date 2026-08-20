@@ -19,6 +19,19 @@ CTestTestfile.cmake
 *.exp
 *.res
 
+# Private signing certificates and keys
+*.pfx
+*.p12
+*.pkcs12
+*.pem
+*.key
+*.pvk
+*.p8
+*.pk8
+*.snk
+*.jks
+*.keystore
+
 # Local editor and user settings
 /.vscode/
 /.vs/
@@ -37,4 +50,3 @@ gamma-changer*.ini
 # Windows metadata
 Thumbs.db
 Desktop.ini
-

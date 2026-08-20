@@ -25,11 +25,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cwchar>
 #include <iterator>
 #include <limits>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace gamma_changer {
@@ -43,12 +45,15 @@ constexpr UINT kPreviewTimer = 1;
 constexpr UINT kDisplayRefreshTimer = 2;
 constexpr UINT kAutoSaveTimer = 3;
 constexpr UINT kRecoveryRetryTimer = 4;
+constexpr UINT kTrayRetryTimer = 5;
 constexpr UINT kAutoSaveDelayMs = 700;
 constexpr UINT kTrayMessage = WM_APP + 1;
 constexpr UINT kProfileRenameMessage = WM_APP + 2;
 constexpr UINT kProfileContextMessage = WM_APP + 3;
 constexpr UINT kProfileCommitRenameMessage = WM_APP + 4;
 constexpr UINT kUndoProfileSwitchMessage = WM_APP + 5;
+constexpr WPARAM kRenameCommitFlag = 0x1u;
+constexpr WPARAM kRenameRestoreFocusFlag = 0x2u;
 constexpr UINT kTrayId = 1;
 constexpr UINT kTrayShowCommand = 1;
 constexpr UINT kTrayExitCommand = 2;
@@ -97,6 +102,17 @@ enum class StatusTone {
     success,
     warning,
     error,
+};
+
+struct PendingAdjustment {
+    CalibrationSettings settings{};
+    std::wstring profile_id;
+    CalibrationSettings profile_base_settings{};
+    bool has_profile_base = false;
+    bool settings_persisted = false;
+    bool profile_persisted = true;
+    bool preference_persisted = true;
+    bool association_detached = true;
 };
 
 struct GuiState {
@@ -153,6 +169,7 @@ struct GuiState {
     HBRUSH background_brush = nullptr;
     HBRUSH card_brush = nullptr;
     HBRUSH sidebar_brush = nullptr;
+    HBRUSH profile_edit_brush = nullptr;
     HDC paint_buffer_dc = nullptr;
     HBITMAP paint_buffer_bitmap = nullptr;
     HGDIOBJ paint_buffer_original = nullptr;
@@ -163,25 +180,47 @@ struct GuiState {
     bool live_preview = true;
     bool startup_enabled = false;
     bool startup_launch = false;
+    bool tray_available = false;
+    bool tray_retry_timer_pending = false;
+    int tray_retry_attempt = 0;
+    bool destroying = false;
+    bool background_suspended = false;
+    bool shutdown_pending = false;
     HWND hovered_profile = nullptr;
     HWND hovered_numeric = nullptr;
     bool profile_keyboard_focus = false;
     StatusTone status_tone = StatusTone::success;
     std::vector<DisplayInfo> displays;
     int active_display_index = -1;
+    std::wstring active_display_id;
+    std::wstring profile_binding_display_id;
+    std::unordered_map<std::wstring, std::wstring> last_stable_id_by_device;
+    std::unordered_set<std::wstring> unresolved_display_devices;
     std::vector<Profile> profiles;
     std::size_t active_preset = 0;
+    // A display can have durable calibration settings without being associated
+    // with a global Profile (for example after upgrading from an older release).
+    // Keep that state explicit so opening the app never binds an unrelated
+    // Profile and overwrites the display on the next launch.
+    bool active_profile_linked = false;
     std::unordered_map<std::wstring, std::wstring> preferred_profile_ids;
     int profile_scroll_offset = 0;
+    int profile_wheel_remainder = 0;
     std::size_t renaming_preset = kNoProfile;
+    std::wstring renaming_profile_id;
+    std::uint64_t profile_rename_generation = 0;
     CalibrationSession session;
     ProfileStore store;
     CalibrationController controller{store};
     ProfileManager profile_manager{store};
     bool reapply_after_display_refresh = false;
     int recovery_retry_attempt = 0;
-    std::unordered_map<std::wstring, CalibrationSettings> pending_adjustments;
+    bool display_refresh_timer_pending = false;
+    bool recovery_retry_timer_pending = false;
+    bool profile_propagation_pending = false;
+    std::unordered_map<std::wstring, PendingAdjustment> pending_adjustments;
     bool profile_store_available = true;
+    bool profile_preferences_available = true;
 };
 
 // Shared internal functions used across the UI translation units.
@@ -190,15 +229,17 @@ GammaParams params_from_sliders(const GuiState& gui);
 void set_status(GuiState& gui, const std::wstring& text, StatusTone tone);
 void set_display_status(GuiState& gui, const std::wstring& text);
 const DisplayInfo* selected_display(const GuiState& gui);
+bool selected_display_ready(const GuiState& gui);
 void set_params_to_controls(GuiState& gui, const GammaParams& params);
 void refresh_preset_buttons(GuiState& gui);
 bool save_and_apply_current(GuiState& gui, bool automatic);
+void suspend_background_activity(GuiState& gui);
 
-void add_tray_icon(HWND window);
+bool add_tray_icon(HWND window);
 void remove_tray_icon(HWND window);
 void show_main_window(HWND window);
 bool apply_profile_from_tray(GuiState& gui, std::size_t index);
-void show_tray_menu(HWND window);
+void show_tray_menu(HWND window, const POINT* anchor = nullptr);
 
 void invalidate_control_background(GuiState& gui, HWND control, int padding = 2);
 void invalidate_preview_curve(GuiState& gui);
@@ -219,7 +260,7 @@ void recreate_fonts(GuiState& gui, UINT dpi);
 
 bool cancel_active_preview(GuiState& gui);
 void create_controls(GuiState& gui);
-void normalize_all_edits(GuiState& gui);
+void normalize_all_edits(GuiState& gui, bool notify_change = true);
 void update_value_labels(GuiState& gui);
 void set_adjustment_enabled(GuiState& gui, bool enabled);
 void edit_changed(GuiState& gui, HWND edit, HWND slider, double minimum, double maximum);
@@ -232,19 +273,27 @@ int selected_display_index(const GuiState& gui);
 void select_display_item(GuiState& gui, int display_index);
 bool load_selected_profile(GuiState& gui);
 bool persist_profile_preferences(GuiState& gui);
-void remember_active_profile_for_display(GuiState& gui, const DisplayInfo& display);
+bool remember_active_profile_for_display(GuiState& gui, const DisplayInfo& display);
+void queue_recovery_after_failed_rollback(
+    GuiState& gui, const DisplayInfo& display,
+    const CalibrationSettings& desired_settings, std::size_t desired_profile,
+    bool desired_profile_linked, bool desired_profile_persisted,
+    bool desired_settings_persisted,
+    const std::wstring& failure);
 bool apply_preferred_profile_to_display(GuiState& gui, const DisplayInfo& display);
 void reset_selected(GuiState& gui);
-void refresh_displays(GuiState& gui);
+bool refresh_displays(GuiState& gui);
 bool reapply_all_committed(GuiState& gui);
 void schedule_recovery_retry(GuiState& gui);
 void run_recovery_retry(GuiState& gui);
 bool flush_before_exit(GuiState& gui);
 bool confirm_close_after_save_failure(GuiState& gui);
+void resume_after_cancelled_exit(GuiState& gui);
+bool display_identity_unresolved(const GuiState& gui, const DisplayInfo& display);
 void scroll_profile_into_view(GuiState& gui, std::size_t index);
 bool persist_presets(GuiState& gui);
 void begin_profile_rename(GuiState& gui, std::size_t index);
-void finish_profile_rename(GuiState& gui, bool commit);
+bool finish_profile_rename(GuiState& gui, bool commit, bool restore_focus);
 void duplicate_profile(GuiState& gui, std::size_t source_index);
 void create_profile_from_current(GuiState& gui);
 void select_preset(GuiState& gui, std::size_t index);

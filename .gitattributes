@@ -1,0 +1,31 @@
+* text=auto
+.gitattributes text eol=lf
+.gitignore text eol=lf
+
+# Source, build metadata, and documentation use repository-stable LF endings.
+*.c text eol=lf
+*.cc text eol=lf
+*.cpp text eol=lf
+*.cxx text eol=lf
+*.h text eol=lf
+*.hh text eol=lf
+*.hpp text eol=lf
+*.hxx text eol=lf
+*.rc text eol=lf
+CMakeLists.txt text eol=lf
+*.cmake text eol=lf
+*.in text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.xml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Windows command scripts keep native CRLF endings.
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Embedded visual assets must never be line-ending normalized.
+*.png binary
+*.ico binary

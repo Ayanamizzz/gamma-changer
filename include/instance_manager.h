@@ -4,6 +4,8 @@
 
 namespace gamma_changer {
 
+inline constexpr UINT kActivateExistingWindowMessage = WM_APP + 6;
+
 class SingleInstanceLock {
 public:
     SingleInstanceLock();
