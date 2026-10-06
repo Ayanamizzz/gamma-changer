@@ -20,6 +20,19 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
     }
 
     switch (message) {
+    case kForegroundProfileMessage:
+        if (gui) schedule_automatic_profiles(*gui);
+        return 0;
+    case WM_ACTIVATEAPP:
+        if (gui) {
+            if (wparam && IsWindowVisible(window) && !IsIconic(window)) {
+                restore_automatic_profiles(*gui);
+                update_automatic_profile_controls(*gui);
+            } else {
+                schedule_automatic_profiles(*gui);
+            }
+        }
+        break;
     case kUndoProfileSwitchMessage:
         if (gui) undo_profile_switch(*gui);
         return 0;
@@ -37,6 +50,10 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             HMENU menu = CreatePopupMenu();
             AppendMenuW(menu, MF_STRING | (builtin ? MF_GRAYED : MF_ENABLED), 1, L"Rename");
             AppendMenuW(menu, MF_STRING | MF_ENABLED, 2, L"Duplicate");
+            const bool can_bind = gui->profile_store_available && selected_display(*gui) &&
+                                  gui->profiles[index].saved;
+            AppendMenuW(menu, MF_STRING | (can_bind ? MF_ENABLED : MF_GRAYED), 4,
+                        L"Bind application...");
             AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
             AppendMenuW(menu, MF_STRING | (builtin ? MF_GRAYED : MF_ENABLED), 3, L"Delete");
             const int x = GET_X_LPARAM(lparam);
@@ -47,6 +64,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             if (command == 1) begin_profile_rename(*gui, index);
             else if (command == 2) duplicate_profile(*gui, index);
             else if (command == 3) delete_preset(*gui, index);
+            else if (command == 4) bind_application_profile(*gui, index);
         }
         return 0;
     case WM_CREATE: {
@@ -63,7 +81,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         background_options.position_y = 0.5;
         current->background.set_options(background_options);
         current->background.load_resource(GetModuleHandleW(nullptr), IDR_UI_WALLPAPER);
-        INITCOMMONCONTROLSEX common{sizeof(common), ICC_BAR_CLASSES};
+        INITCOMMONCONTROLSEX common{sizeof(common), ICC_BAR_CLASSES | ICC_LISTVIEW_CLASSES};
         InitCommonControlsEx(&common);
         create_controls(*current);
         std::wstring startup_error;
@@ -126,6 +144,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                        L"calibration saving remains available",
                        StatusTone::error);
         }
+        initialize_automatic_profiles(*current);
         log_message(LogLevel::info,
                     std::wstring(kApplicationName) + L" " + kApplicationVersion + L" started");
         return 0;
@@ -181,6 +200,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                                                   rollback_error);
             }
         }
+        if (gui) restore_automatic_profiles(*gui);
         return TRUE;
     case WM_ENDSESSION:
         if (gui && wparam) cancel_active_preview(*gui);
@@ -192,6 +212,8 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                  item->CtlID == kBeforeAfter ||
                  item->CtlID == kRefreshButton || item->CtlID == kPresetSave ||
                  item->CtlID == kPresetDelete || item->CtlID == kStartupToggle ||
+                 item->CtlID == kAutoSwitchToggle || item->CtlID == kBindApplication ||
+                 item->CtlID == kAppRules ||
                 (item->CtlID >= kProfileIdBase &&
                  static_cast<std::size_t>(item->CtlID - kProfileIdBase) < gui->profiles.size())) {
                 draw_owner_button(*item, *gui);
@@ -211,7 +233,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                 SetTextColor(dc, ui::Theme::text);
             } else if (control == gui->display_caption || control == gui->preset_caption) {
                 SetTextColor(dc, ui::Theme::primary_soft);
-            } else if (control == gui->display_status) {
+            } else if (control == gui->display_status || control == gui->auto_switch_status) {
                 SetTextColor(dc, ui::Theme::sidebar_secondary);
             } else if (control == gui->subtitle || control == gui->main_subtitle ||
                        control == gui->status || control == gui->preview_caption ||
@@ -291,6 +313,18 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             InvalidateRect(gui->startup_button, nullptr, FALSE);
             return 0;
         }
+        if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) == kAutoSwitchToggle) {
+            toggle_automatic_profiles(*gui);
+            return 0;
+        }
+        if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) == kBindApplication) {
+            bind_application_profile(*gui, gui->active_preset);
+            return 0;
+        }
+        if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) == kAppRules) {
+            show_application_rules(*gui);
+            return 0;
+        }
         if (LOWORD(wparam) == kDisplayCombo && HIWORD(wparam) == CBN_SELCHANGE) {
             KillTimer(window, kPreviewTimer);
             KillTimer(window, kAutoSaveTimer);
@@ -305,6 +339,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                 set_display_status(*gui, metadata);
                 if (loaded) set_status(*gui, L"Ready", StatusTone::success);
             }
+            update_automatic_profile_controls(*gui);
             return 0;
         }
         if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) == kApplyButton) {
@@ -317,6 +352,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         }
         if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) == kRefreshButton) {
             refresh_displays(*gui);
+            evaluate_automatic_profiles(*gui, true);
             return 0;
         }
         break;
@@ -327,7 +363,10 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         }
         return 0;
     case WM_TIMER:
-        if (wparam == kPreviewTimer && gui) {
+        if (wparam == kForegroundProfileTimer && gui) {
+            KillTimer(window, kForegroundProfileTimer);
+            evaluate_automatic_profiles(*gui);
+        } else if (wparam == kPreviewTimer && gui) {
             KillTimer(window, kPreviewTimer);
             if (gui->live_preview) preview_selected(*gui);
         } else if (wparam == kDisplayRefreshTimer && gui) {
@@ -337,11 +376,13 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                 gui->reapply_after_display_refresh = false;
                 schedule_recovery_retry(*gui);
             }
+            evaluate_automatic_profiles(*gui, true);
         } else if (wparam == kAutoSaveTimer && gui) {
             KillTimer(window, kAutoSaveTimer);
             save_and_apply_current(*gui, true);
         } else if (wparam == kRecoveryRetryTimer && gui) {
             run_recovery_retry(*gui);
+            evaluate_automatic_profiles(*gui, true);
         }
         return 0;
     case kTrayMessage:
@@ -389,10 +430,12 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
     case WM_CLOSE:
         log_message(LogLevel::info, L"Application exit requested");
         if (gui && !confirm_close_after_save_failure(*gui)) return 0;
+        if (gui) restore_automatic_profiles(*gui);
         log_message(LogLevel::info, L"Final adjustments saved; destroying main window");
         DestroyWindow(window);
         return 0;
     case WM_DESTROY:
+        if (gui) gui->foreground_watcher.stop();
         if (gui) cancel_active_preview(*gui);
         remove_tray_icon(window);
         if (gui && gui->normal_font) DeleteObject(gui->normal_font);

@@ -45,6 +45,9 @@ public:
     bool reapply_committed(const DisplayInfo& display,
                            const CalibrationSettings& settings,
                            std::wstring& error);
+    bool apply_runtime(const DisplayInfo& display,
+                       const CalibrationSettings& settings,
+                       std::wstring& error);
     bool restore_original(const DisplayInfo& display, std::wstring& error);
 
     GammaRamp generate_preview(const CalibrationSettings& settings) const;

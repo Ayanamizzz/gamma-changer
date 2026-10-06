@@ -174,6 +174,18 @@ bool CalibrationController::reapply_committed(const DisplayInfo& display,
     return true;
 }
 
+bool CalibrationController::apply_runtime(const DisplayInfo& display,
+                                           const CalibrationSettings& settings,
+                                           std::wstring& error) {
+    if (!lut_generator_.validate(settings, error)) return false;
+    if (preview_active_) {
+        error = L"Finish or discard the active preview before automatic switching";
+        return false;
+    }
+    if (!ensure_original_ramp(display, error)) return false;
+    return ramp_backend_.write(display, lut_generator_.generate(settings), error);
+}
+
 bool CalibrationController::restore_original(const DisplayInfo& display,
                                              std::wstring& error) {
     GammaRamp original;

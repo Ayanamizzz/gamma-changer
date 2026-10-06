@@ -1,6 +1,8 @@
 #pragma once
 
 #include "app_version.h"
+#include "app_profile_rules.h"
+#include "foreground_app_watcher.h"
 #include "calibration_controller.h"
 #include "calibration_session.h"
 #include "display_manager.h"
@@ -43,15 +45,20 @@ constexpr UINT kPreviewTimer = 1;
 constexpr UINT kDisplayRefreshTimer = 2;
 constexpr UINT kAutoSaveTimer = 3;
 constexpr UINT kRecoveryRetryTimer = 4;
+constexpr UINT kForegroundProfileTimer = 5;
 constexpr UINT kAutoSaveDelayMs = 700;
 constexpr UINT kTrayMessage = WM_APP + 1;
 constexpr UINT kProfileRenameMessage = WM_APP + 2;
 constexpr UINT kProfileContextMessage = WM_APP + 3;
 constexpr UINT kProfileCommitRenameMessage = WM_APP + 4;
 constexpr UINT kUndoProfileSwitchMessage = WM_APP + 5;
+constexpr UINT kForegroundProfileMessage = WM_APP + 6;
 constexpr UINT kTrayId = 1;
 constexpr UINT kTrayShowCommand = 1;
 constexpr UINT kTrayExitCommand = 2;
+constexpr UINT kTrayAutoSwitchCommand = 3;
+constexpr UINT kTrayAutoPauseCommand = 4;
+constexpr UINT kTrayAppRulesCommand = 5;
 constexpr UINT kTrayProfileCommandBase = 100;
 
 enum ControlId : int {
@@ -90,6 +97,10 @@ enum ControlId : int {
     kDisplayStatus = 138,
     kProfileRename = 139,
     kBeforeAfter = 140,
+    kAutoSwitchToggle = 141,
+    kBindApplication = 142,
+    kAppRules = 143,
+    kAutoSwitchStatus = 144,
 };
 
 enum class StatusTone {
@@ -97,6 +108,13 @@ enum class StatusTone {
     success,
     warning,
     error,
+};
+
+struct AutomaticDisplayProfile {
+    GammaRamp desktop_ramp{};
+    std::wstring rule_id;
+    std::wstring profile_id;
+    CalibrationSettings settings{};
 };
 
 struct GuiState {
@@ -143,6 +161,10 @@ struct GuiState {
     HWND preset_delete = nullptr;
     HWND profile_rename = nullptr;
     HWND before_after_button = nullptr;
+    HWND auto_switch_button = nullptr;
+    HWND bind_application_button = nullptr;
+    HWND app_rules_button = nullptr;
+    HWND auto_switch_status = nullptr;
     HFONT normal_font = nullptr;
     HFONT title_font = nullptr;
     HFONT heading_font = nullptr;
@@ -182,6 +204,13 @@ struct GuiState {
     int recovery_retry_attempt = 0;
     std::unordered_map<std::wstring, CalibrationSettings> pending_adjustments;
     bool profile_store_available = true;
+    AppProfileConfig app_profile_config;
+    ForegroundAppWatcher foreground_watcher;
+    bool foreground_watcher_running = false;
+    bool auto_switch_paused = false;
+    bool app_rules_dialog_open = false;
+    std::wstring foreground_application;
+    std::unordered_map<std::wstring, AutomaticDisplayProfile> automatic_display_profiles;
 };
 
 // Shared internal functions used across the UI translation units.
@@ -228,6 +257,7 @@ void preview_selected(GuiState& gui);
 void mark_changed(GuiState& gui);
 void enable_modern_backdrop(HWND window);
 std::wstring display_metadata(const DisplayInfo& display);
+std::wstring display_label(const DisplayInfo& display, std::size_t index);
 int selected_display_index(const GuiState& gui);
 void select_display_item(GuiState& gui, int display_index);
 bool load_selected_profile(GuiState& gui);
@@ -241,6 +271,17 @@ void schedule_recovery_retry(GuiState& gui);
 void run_recovery_retry(GuiState& gui);
 bool flush_before_exit(GuiState& gui);
 bool confirm_close_after_save_failure(GuiState& gui);
+void initialize_automatic_profiles(GuiState& gui);
+void schedule_automatic_profiles(GuiState& gui);
+void evaluate_automatic_profiles(GuiState& gui, bool force = false);
+bool restore_automatic_profiles(GuiState& gui);
+bool pause_automatic_profiles(GuiState& gui);
+void toggle_automatic_profiles(GuiState& gui);
+void resume_automatic_profiles(GuiState& gui);
+void update_automatic_profile_controls(GuiState& gui);
+void bind_application_profile(GuiState& gui, std::size_t profile_index);
+void show_application_rules(GuiState& gui);
+void remove_application_profile_rules(GuiState& gui, const std::wstring& profile_id);
 void scroll_profile_into_view(GuiState& gui, std::size_t index);
 bool persist_presets(GuiState& gui);
 void begin_profile_rename(GuiState& gui, std::size_t index);

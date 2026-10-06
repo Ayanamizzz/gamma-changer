@@ -82,6 +82,16 @@ void layout_controls(GuiState& gui, int width, int height) {
     MoveWindow(gui.preset_delete,
                profile_content_x + profile_content_width - delete_width, profile_save_y,
                delete_width, scale(32), TRUE);
+    const int binding_y = profile_save_y + scale(40);
+    const int binding_width = (profile_content_width - action_gap) / 2;
+    MoveWindow(gui.bind_application_button, profile_content_x, binding_y,
+               binding_width, scale(32), TRUE);
+    MoveWindow(gui.app_rules_button, profile_content_x + binding_width + action_gap,
+               binding_y, binding_width, scale(32), TRUE);
+    MoveWindow(gui.auto_switch_button, profile_content_x, binding_y + scale(40),
+               profile_content_width, scale(32), TRUE);
+    MoveWindow(gui.auto_switch_status, profile_content_x, binding_y + scale(80),
+               profile_content_width, scale(40), TRUE);
     MoveWindow(gui.startup_button, side_margin, height - scale(62), side_width,
                scale(36), TRUE);
 
@@ -193,6 +203,10 @@ void recreate_fonts(GuiState& gui, UINT dpi) {
     apply_font(gui.g_gain_value, gui.normal_font);
     apply_font(gui.b_gain_value, gui.normal_font);
     apply_font(gui.before_after_button, gui.normal_font);
+    apply_font(gui.bind_application_button, gui.normal_font);
+    apply_font(gui.app_rules_button, gui.normal_font);
+    apply_font(gui.auto_switch_button, gui.normal_font);
+    apply_font(gui.auto_switch_status, gui.small_font);
     apply_font(gui.profile_rename, gui.normal_font);
     for (HWND button : gui.preset_buttons) apply_font(button, gui.normal_font);
     apply_font(gui.main_heading, gui.heading_font);

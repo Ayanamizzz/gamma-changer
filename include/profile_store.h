@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app_profile_rules.h"
 #include "gamma_types.h"
 
 #include <filesystem>
@@ -37,6 +38,13 @@ public:
         const std::vector<DisplayProfilePreference>& preferences,
         std::wstring& error) const;
 
+    // A missing or malformed rule file leaves automatic switching disabled.
+    // Version 1 rules receive ids in memory; saves use version 2. Reading never
+    // repairs or overwrites the source file.
+    AppProfileConfig load_app_profile_config() const;
+    bool save_app_profile_config(const AppProfileConfig& config,
+                                 std::wstring& error) const;
+
     bool load_base_ramp(const std::wstring& display_id, GammaRamp& ramp) const;
     bool save_base_ramp(const std::wstring& display_id, const GammaRamp& ramp, std::wstring& error) const;
 
@@ -46,6 +54,7 @@ private:
     std::filesystem::path ramp_path(const std::wstring& display_id) const;
     std::filesystem::path profiles_path() const;
     std::filesystem::path profile_preferences_path() const;
+    std::filesystem::path app_profile_rules_path() const;
 };
 
 }  // namespace gamma_changer

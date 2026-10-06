@@ -411,6 +411,18 @@ void create_controls(GuiState& gui) {
     gui.startup_button = make_control(WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                                       L"BUTTON", L"Start with Windows", gui.window,
                                       kStartupToggle, 0, 0, 0, 0);
+    gui.bind_application_button = make_control(WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | WS_TABSTOP,
+                                               L"BUTTON", L"Bind app...", gui.window,
+                                               kBindApplication, 0, 0, 0, 0);
+    gui.app_rules_button = make_control(WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | WS_TABSTOP,
+                                        L"BUTTON", L"App rules...", gui.window,
+                                        kAppRules, 0, 0, 0, 0);
+    gui.auto_switch_button = make_control(WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | WS_TABSTOP,
+                                          L"BUTTON", L"Auto-switch: Off", gui.window,
+                                          kAutoSwitchToggle, 0, 0, 0, 0);
+    gui.auto_switch_status = make_control(WS_CHILD | WS_VISIBLE, L"STATIC",
+                                          L"Bind an app to follow its profile", gui.window,
+                                          kAutoSwitchStatus, 0, 0, 0, 0);
 
     auto make_slider = [&](int id) {
         return make_control(WS_CHILD | WS_VISIBLE | TBS_NOTICKS | WS_TABSTOP,
@@ -522,6 +534,10 @@ void create_controls(GuiState& gui) {
     apply_font(gui.preset_delete, gui.normal_font);
     apply_font(gui.profile_rename, gui.normal_font);
     apply_font(gui.startup_button, gui.normal_font);
+    apply_font(gui.bind_application_button, gui.normal_font);
+    apply_font(gui.app_rules_button, gui.normal_font);
+    apply_font(gui.auto_switch_button, gui.normal_font);
+    apply_font(gui.auto_switch_status, gui.small_font);
     apply_font(gui.apply_button, gui.normal_font);
     apply_font(gui.reset_button, gui.normal_font);
     apply_font(gui.before_after_button, gui.normal_font);

@@ -61,6 +61,16 @@ Rules:
 - `calibration_controller`: application-level calibration transactions.
 - `profile_store` / `profile_manager`: persistence and profile collection
   ownership.
+- `app_profile_rules`: pure application filter matching, default selection, and
+  shared-template copying for independent application settings. Rules reference
+  stable IDs and accept user-selected executables and names.
+- `src/ui/app_profiles.cpp`: application-specific configuration views, filter
+  and parameter dialogs, and foreground switching. Dialog edits stay in a draft
+  until saved; runtime application preserves the desktop LUT.
+- `foreground_app_watcher`: Win32 foreground notifications delivered to the UI
+  message loop, with no polling or separate service.
+- `display_selection`: pure highest-pixel-count default selection; refreshing
+  preserves the selected physical display.
 
 ## Planned next steps
 

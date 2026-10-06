@@ -1,4 +1,5 @@
 #include "calibration_session.h"
+#include "display_selection.h"
 #include "gamma_lut.h"
 #include "profile_list_logic.h"
 #include "profile_manager.h"
@@ -95,6 +96,37 @@ bool check_validation() {
     display.stable_id = L"stable-monitor-id";
     ok &= expect(display_storage_id(display) == L"stable-monitor-id",
                  L"storage identity must prefer the stable monitor id");
+    return ok;
+}
+
+bool check_display_selection() {
+    const auto display = [](int width, int height, bool primary = false) {
+        DisplayInfo info;
+        info.width = width;
+        info.height = height;
+        info.primary = primary;
+        return info;
+    };
+    bool ok = expect(default_display_index({}) == -1,
+                     L"empty display enumeration must have no default selection");
+    ok &= expect(default_display_index({display(1920, 1080, true), display(2560, 1440)}) == 1,
+                 L"a 2K display must beat a lower-resolution primary display");
+    ok &= expect(default_display_index({display(2560, 1440), display(1920, 1080, true)}) == 0,
+                 L"the largest display must win independently of enumeration order");
+    ok &= expect(default_display_index({display(1920, 1080), display(1920, 1080, true)}) == 1,
+                 L"equal pixel area must prefer the primary display");
+    ok &= expect(default_display_index({display(1920, 1080, true), display(1920, 1080)}) == 0,
+                 L"a later equal-area display must not replace the primary display");
+    ok &= expect(default_display_index({display(1920, 1080), display(1920, 1080)}) == 0,
+                 L"equal area and primary status must preserve enumeration order");
+    ok &= expect(default_display_index({display(1920, 1080, true), display(1440, 2560)}) == 1,
+                 L"portrait displays must be compared by total pixels, not width");
+    ok &= expect(default_display_index({display(2560, 1440), display(1440, 2560, true)}) == 1,
+                 L"landscape and portrait modes with equal area must use the primary tie-break");
+    ok &= expect(default_display_index({display(65536, 65536), display(100000, 100000)}) == 1,
+                 L"pixel-area multiplication must not overflow 32 bits");
+    ok &= expect(default_display_index({display(-1920, -1080), display(1920, 1080)}) == 1,
+                 L"invalid dimensions must not appear to have a positive pixel area");
     return ok;
 }
 
@@ -499,7 +531,7 @@ bool check_profile_migration() {
 }  // namespace
 
 int wmain() {
-    const bool ok = check_validation() && check_lut() && check_store() &&
+    const bool ok = check_validation() && check_display_selection() && check_lut() && check_store() &&
                     check_profile_migration() && check_profile_list_logic();
     if (!ok) return 1;
     std::wcout << L"core safety checks passed\n";

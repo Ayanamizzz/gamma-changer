@@ -11,6 +11,7 @@
 #include <iterator>
 #include <sstream>
 #include <unordered_set>
+#include <utility>
 
 namespace gamma_changer {
 namespace {
@@ -148,11 +149,24 @@ constexpr std::uintmax_t kParamsFileLimit = 64 * 1024;
 constexpr std::uintmax_t kPresetsFileLimit = 64 * 1024;
 constexpr std::uintmax_t kProfilesFileLimit = 4 * 1024 * 1024;
 constexpr std::uintmax_t kProfilePreferencesFileLimit = 64 * 1024;
+constexpr std::uintmax_t kAppProfileRulesFileLimit = 4 * 1024 * 1024;
 constexpr std::uintmax_t kRampFileLimit = 4096;
 constexpr std::size_t kMaxProfileRows = 1024;
+constexpr std::size_t kMaxAppProfileRules = 1024;
 constexpr std::size_t kMaxPresetNameLength = 64;
 
 constexpr std::size_t kMaxFilenameStem = 80;
+
+bool valid_app_profile_rule(const AppProfileRule& rule) {
+    const auto valid_field = [](const std::wstring& value) {
+        return !value.empty() &&
+               value.find_first_of(L"\t\r\n") == std::wstring::npos &&
+               value.find(L'\0') == std::wstring::npos;
+    };
+    return valid_field(rule.id) && valid_field(rule.executable_path) &&
+           valid_field(rule.display_id) && valid_field(rule.profile_id) &&
+           (rule.name.empty() || valid_field(rule.name));
+}
 
 // FNV-1a 64-bit: stable across standard-library versions and platforms, unlike
 // std::hash<std::wstring>, so long display identities keep the same file name
@@ -239,6 +253,10 @@ std::filesystem::path ProfileStore::profiles_path() const {
 
 std::filesystem::path ProfileStore::profile_preferences_path() const {
     return root_ / L"profile_preferences.v1";
+}
+
+std::filesystem::path ProfileStore::app_profile_rules_path() const {
+    return root_ / L"app_rules.v1";
 }
 
 std::filesystem::path presets_path(const std::filesystem::path& root) {
@@ -591,6 +609,92 @@ bool ProfileStore::save_profile_preferences(
     return replace_file(temporary, target, error);
 }
 
+AppProfileConfig ProfileStore::load_app_profile_config() const {
+    AppProfileConfig config;
+    if (file_exceeds(app_profile_rules_path(), kAppProfileRulesFileLimit)) return config;
+    std::wstring file_text;
+    if (!read_utf8_text_file(app_profile_rules_path(), file_text)) return config;
+
+    std::wistringstream input(file_text);
+    std::wstring header;
+    std::size_t version = 0;
+    int enabled = 0;
+    if (!(input >> header >> version >> enabled) || header != L"GammaChangerAppRules" ||
+        (version != 1 && version != 2) || (enabled != 0 && enabled != 1)) {
+        return {};
+    }
+    std::wstring line;
+    std::getline(input, line);
+    if (line.find_first_not_of(L" \t\r") != std::wstring::npos) return {};
+    config.enabled = enabled != 0;
+
+    std::unordered_set<std::wstring> ids;
+    while (std::getline(input, line)) {
+        if (line.find_first_not_of(L" \t\r") == std::wstring::npos) continue;
+        if (config.rules.size() >= kMaxAppProfileRules) return {};
+        std::wistringstream row(line);
+        AppProfileRule rule;
+        int rule_enabled = 0;
+        if (version == 2 && !(row >> std::quoted(rule.id) >> std::quoted(rule.name))) return {};
+        if (!(row >> std::quoted(rule.executable_path) >> std::quoted(rule.display_id)
+                  >> std::quoted(rule.profile_id) >> rule_enabled)) {
+            return {};
+        }
+        if (version == 1) rule.id = L"rule-" + std::to_wstring(config.rules.size() + 1);
+        row >> std::ws;
+        if (!row.eof() || (rule_enabled != 0 && rule_enabled != 1) ||
+            !valid_app_profile_rule(rule) || !ids.insert(rule.id).second) {
+            return {};
+        }
+        rule.enabled = rule_enabled != 0;
+        config.rules.push_back(std::move(rule));
+    }
+    return input.bad() ? AppProfileConfig{} : config;
+}
+
+bool ProfileStore::save_app_profile_config(const AppProfileConfig& config,
+                                          std::wstring& error) const {
+    if (config.rules.size() > kMaxAppProfileRules) {
+        error = L"refusing to save more than 1024 application profile rules";
+        return false;
+    }
+    std::unordered_set<std::wstring> ids;
+    for (const auto& rule : config.rules) {
+        if (!valid_app_profile_rule(rule)) {
+            error = L"refusing to save an invalid application profile rule";
+            return false;
+        }
+        if (!ids.insert(rule.id).second) {
+            error = L"refusing to save duplicate application profile rule ids";
+            return false;
+        }
+    }
+
+    std::wostringstream content;
+    content << L"GammaChangerAppRules 2 " << (config.enabled ? 1 : 0) << L'\n';
+    for (const auto& rule : config.rules) {
+        content << std::quoted(rule.id) << L' ' << std::quoted(rule.name) << L' '
+                << std::quoted(rule.executable_path) << L' '
+                << std::quoted(rule.display_id) << L' '
+                << std::quoted(rule.profile_id) << L' ' << (rule.enabled ? 1 : 0) << L'\n';
+    }
+    const std::wstring file_text = content.str();
+    if (to_utf8(file_text).size() > kAppProfileRulesFileLimit) {
+        error = L"application profile rule configuration is too large";
+        return false;
+    }
+
+    StoreWriteLock lock;
+    const auto target = app_profile_rules_path();
+    const auto temporary = target.wstring() + L".tmp";
+    if (!write_utf8_text_file(temporary, file_text, error, L"application profile rules")) {
+        std::error_code ignored;
+        std::filesystem::remove(temporary, ignored);
+        return false;
+    }
+    return replace_file(temporary, target, error);
+}
+
 bool ProfileStore::load_base_ramp(const std::wstring& display_id, GammaRamp& ramp) const {
     const auto primary = ramp_path(display_id);
     if (file_exceeds(primary, kRampFileLimit)) return false;
@@ -611,7 +715,7 @@ bool ProfileStore::save_base_ramp(const std::wstring& display_id, const GammaRam
     StoreWriteLock lock;
     const auto target = ramp_path(display_id);
     const auto temporary = target.wstring() + L".tmp";
-    std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+    std::ofstream output(std::filesystem::path(temporary), std::ios::binary | std::ios::trunc);
     if (!output) {
         error = L"cannot write base ramp file";
         return false;

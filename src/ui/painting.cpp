@@ -130,10 +130,15 @@ void draw_owner_button(const DRAWITEMSTRUCT& item, const GuiState& gui) {
         fill = ui::Theme::sidebar;
         text = ui::Theme::sidebar_secondary;
         outline = ui::Theme::sidebar;
-    } else if (item.CtlID == kPresetSave) {
+    } else if (item.CtlID == kPresetSave || item.CtlID == kBindApplication ||
+               item.CtlID == kAppRules || item.CtlID == kAutoSwitchToggle) {
         fill = ui::Theme::sidebar_action;
         text = ui::Theme::sidebar_text;
         outline = ui::Theme::sidebar_action_border;
+        if (item.CtlID == kAutoSwitchToggle && gui.app_profile_config.enabled &&
+            !gui.auto_switch_paused) {
+            outline = ui::Theme::success;
+        }
     }
     if (disabled) {
         fill = ui::Theme::disabled_surface;
@@ -146,7 +151,9 @@ void draw_owner_button(const DRAWITEMSTRUCT& item, const GuiState& gui) {
     }
 
     const bool sidebar_button = item.CtlID == kRefreshButton || item.CtlID == kPresetSave ||
-                                 item.CtlID == kPresetDelete || profile_item;
+                                 item.CtlID == kPresetDelete || item.CtlID == kBindApplication ||
+                                 item.CtlID == kAppRules || item.CtlID == kAutoSwitchToggle ||
+                                 profile_item;
     if (sidebar_button) {
         paint_parent_layer(item.hwndItem, item.hDC, const_cast<GuiState&>(gui));
     }

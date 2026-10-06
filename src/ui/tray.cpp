@@ -39,6 +39,7 @@ void show_main_window(HWND window) {
 
 bool apply_profile_from_tray(GuiState& gui, std::size_t index) {
     if (index >= gui.profiles.size()) return false;
+    if (!pause_automatic_profiles(gui)) return false;
     if (gui.session.dirty) {
         KillTimer(gui.window, kAutoSaveTimer);
         if (!save_and_apply_current(gui, true)) {
@@ -92,6 +93,17 @@ void show_tray_menu(HWND window) {
         AppendMenuW(profiles, MF_STRING | MF_GRAYED, 0, L"No saved profiles");
     }
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(profiles), L"Profiles");
+    if (gui) {
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING | (gui->app_profile_config.enabled ? MF_CHECKED : 0),
+                    kTrayAutoSwitchCommand, L"Automatic application profiles");
+        if (gui->app_profile_config.enabled) {
+            AppendMenuW(menu, MF_STRING, kTrayAutoPauseCommand,
+                        gui->auto_switch_paused ? L"Resume automatic switching"
+                                                : L"Pause automatic switching");
+        }
+        AppendMenuW(menu, MF_STRING, kTrayAppRulesCommand, L"Application bindings...");
+    }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kTrayExitCommand, L"Exit");
     POINT point{};
@@ -107,6 +119,19 @@ void show_tray_menu(HWND window) {
         show_main_window(window);
     } else if (command == kTrayExitCommand) {
         SendMessageW(window, WM_CLOSE, 0, 0);
+    } else if (gui && command == kTrayAutoSwitchCommand) {
+        // This menu item toggles the saved enabled state even while manually paused.
+        if (gui->app_profile_config.enabled) {
+            gui->auto_switch_paused = false;
+            toggle_automatic_profiles(*gui);
+        } else {
+            resume_automatic_profiles(*gui);
+        }
+    } else if (gui && command == kTrayAutoPauseCommand) {
+        if (gui->auto_switch_paused) resume_automatic_profiles(*gui);
+        else pause_automatic_profiles(*gui);
+    } else if (gui && command == kTrayAppRulesCommand) {
+        show_application_rules(*gui);
     } else if (gui && command >= kTrayProfileCommandBase &&
                command < kTrayProfileCommandBase + gui->profiles.size()) {
         apply_profile_from_tray(*gui,

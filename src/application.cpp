@@ -1,4 +1,5 @@
 #include "ui/gui_internal.h"
+#include "display_selection.h"
 
 using namespace gamma_changer;
 
@@ -459,6 +460,7 @@ void preview_selected(GuiState& gui) {
 }
 
 void reset_selected(GuiState& gui) {
+    if (!pause_automatic_profiles(gui)) return;
     if (gui.active_preset >= gui.profiles.size()) return;
     const auto* display = selected_display(gui);
     if (!display) {
@@ -530,7 +532,7 @@ void refresh_displays(GuiState& gui) {
 
     gui.displays = DisplayManager::enumerate();
     SendMessageW(gui.display_combo, CB_RESETCONTENT, 0, 0);
-    int selected = 0;
+    int selected = default_display_index(gui.displays);
     for (int i = 0; i < static_cast<int>(gui.displays.size()); ++i) {
         const std::wstring label = display_label(gui.displays[i], static_cast<std::size_t>(i));
         const LRESULT item = SendMessageW(gui.display_combo, CB_ADDSTRING, 0,
@@ -541,7 +543,7 @@ void refresh_displays(GuiState& gui) {
         }
         const bool stable_match = !previous_stable_id.empty() &&
                                   gui.displays[i].stable_id == previous_stable_id;
-        if (stable_match || (previous_stable_id.empty() &&
+        if (stable_match || (previous_stable_id.empty() && !previous_device.empty() &&
                              gui.displays[i].device_name == previous_device)) {
             selected = i;
         }
@@ -549,12 +551,16 @@ void refresh_displays(GuiState& gui) {
     if (!gui.displays.empty()) {
         EnableWindow(gui.display_combo, TRUE);
         set_adjustment_enabled(gui, true);
-        SendMessageW(gui.display_combo, CB_SETCURSEL, selected, 0);
+        select_display_item(gui, selected);
         if (!previous_storage_id.empty() &&
             previous_storage_id != display_storage_id(gui.displays[selected])) {
             gui.session.profile_switch_undo_available = false;
             gui.session.undo_display_id.clear();
         }
+        // Enumeration indexes can change when another screen disconnects. Only
+        // a different physical display should apply a new preferred profile.
+        gui.active_display_index =
+            previous_storage_id == display_storage_id(gui.displays[selected]) ? selected : -1;
         const bool loaded = load_selected_profile(gui);
         const std::wstring selected_id = display_storage_id(gui.displays[selected]);
         if (loaded) {

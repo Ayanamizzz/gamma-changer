@@ -35,8 +35,10 @@ public:
     bool fail_read = false;
     int fail_write_number = 0;
     int write_count = 0;
+    int read_count = 0;
 
     bool read(const DisplayInfo&, GammaRamp& ramp, std::wstring& error) override {
+        ++read_count;
         if (fail_read) {
             error = L"injected read failure";
             return false;
@@ -139,6 +141,94 @@ int wmain() {
                      L"identity fixture must save stable-id settings");
         ok &= expect(identity_controller.has_saved_settings(display),
                      L"stable-id settings must be recognized");
+    }
+
+    {
+        ProfileStore runtime_store(temporary.path / L"runtime");
+        FakeRampBackend runtime_backend;
+        CalibrationController runtime_controller(runtime_store, runtime_backend);
+        const GammaRamp original = runtime_backend.current;
+        std::wstring error;
+        ok &= expect(runtime_controller.apply_runtime(display, settings, error),
+                     L"automatic switching must apply runtime settings");
+        ok &= expect(runtime_backend.current.channel == build_ramp(settings).channel,
+                     L"automatic switching must write the selected profile ramp");
+        ok &= expect(!runtime_controller.has_saved_settings(display),
+                     L"automatic switching must not create saved display settings");
+        GammaRamp captured{};
+        ok &= expect(runtime_store.load_base_ramp(display.stable_id, captured) &&
+                         captured.channel == original.channel,
+                     L"first automatic switch must capture the original ramp");
+
+        const CalibrationSettings baseline{1.10, 0.05, 1.0, 1.0, 1.0, 1.0};
+        ok &= expect(runtime_store.save_params(display.stable_id, baseline, error),
+                     L"runtime fixture must save desktop settings");
+        ok &= expect(runtime_store.save_profile_preferences(
+                         {{display.stable_id, L"desktop-profile"}}, error),
+                     L"runtime fixture must save the default profile");
+        ok &= expect(runtime_controller.apply_runtime(display, settings, error),
+                     L"a later automatic switch must succeed");
+        CalibrationSettings saved{};
+        ok &= expect(runtime_store.try_load_params(display.stable_id, saved) &&
+                         settings_equal(saved, baseline),
+                     L"automatic switching must preserve saved desktop settings");
+        const auto preferences = runtime_store.load_profile_preferences();
+        ok &= expect(preferences.size() == 1 &&
+                         preferences.front().display_id == display.stable_id &&
+                         preferences.front().profile_id == L"desktop-profile",
+                     L"automatic switching must preserve the default profile");
+        ok &= expect(runtime_backend.read_count == 1,
+                     L"automatic switching must capture the original ramp only once");
+
+        CalibrationSettings invalid = settings;
+        invalid.gamma = 0.0;
+        const int writes_before_invalid = runtime_backend.write_count;
+        error.clear();
+        ok &= expect(!runtime_controller.apply_runtime(display, invalid, error) &&
+                         !error.empty(),
+                     L"invalid runtime settings must report an error");
+        ok &= expect(runtime_backend.write_count == writes_before_invalid,
+                     L"invalid runtime settings must not write a ramp");
+
+        runtime_backend.fail_write_number = runtime_backend.write_count + 1;
+        error.clear();
+        ok &= expect(!runtime_controller.apply_runtime(display, baseline, error) &&
+                         !error.empty(),
+                     L"a failed runtime ramp write must report an error");
+        ok &= expect(runtime_backend.current.channel == build_ramp(settings).channel,
+                     L"a failed runtime switch must preserve the current ramp");
+        ok &= expect(runtime_store.try_load_params(display.stable_id, saved) &&
+                         settings_equal(saved, baseline),
+                     L"a failed runtime switch must preserve saved desktop settings");
+    }
+
+    {
+        ProfileStore preview_store(temporary.path / L"runtime-preview");
+        FakeRampBackend preview_backend;
+        CalibrationController preview_controller(preview_store, preview_backend);
+        std::wstring error;
+        ok &= expect(preview_controller.preview(display, settings, error),
+                     L"runtime preview fixture must start a preview");
+        const GammaRamp preview_ramp = preview_backend.current;
+        const int writes_before = preview_backend.write_count;
+        error.clear();
+        ok &= expect(!preview_controller.apply_runtime(display, default_params(), error) &&
+                         !error.empty(),
+                     L"automatic switching must refuse an active preview on the same display");
+        DisplayInfo other_display = display;
+        other_display.device_name = L"\\\\.\\OTHERDISPLAY";
+        other_display.stable_id = L"other-stable-display";
+        error.clear();
+        ok &= expect(!preview_controller.apply_runtime(other_display, default_params(), error) &&
+                         !error.empty(),
+                     L"automatic switching must refuse an active preview on another display");
+        ok &= expect(preview_backend.write_count == writes_before &&
+                         preview_backend.current.channel == preview_ramp.channel,
+                     L"a refused automatic switch must leave the preview untouched");
+        ok &= expect(preview_controller.cancel_preview(display, error),
+                     L"a refused automatic switch must retain a cancellable preview");
+        ok &= expect(preview_controller.apply_runtime(display, settings, error),
+                     L"automatic switching must resume after cancelling the preview");
     }
 
     {

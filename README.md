@@ -4,7 +4,7 @@ Gamma Changer is a native Windows desktop utility for adjusting the software gam
 each connected display. It provides a modern, high-DPI Win32 interface with per-monitor
 settings, a scrollable profile list, direct numeric input, and a live tone-response preview.
 
-Current version: **2.4.0**
+Current version: **2.6.0**
 
 ## Features
 
@@ -14,6 +14,9 @@ Current version: **2.4.0**
 - Shows the reference and adjusted tone-response curves.
 - Provides a scrollable list of persistent, renameable profiles with no four-slot limit.
 - Remembers the preferred profile for each display and applies it when switching displays.
+- Automatically switches profiles for the foreground application using per-display executable bindings.
+- Provides a separate filter list for each application, with custom names, parameter editing, and filter selection.
+- Defaults to the display with the highest pixel count; keeps your selection when refreshing displays.
 - Automatically saves changes 0.7 seconds after the last adjustment (Live Preview + Auto-Save).
 - Preserves settings by stable display identity across refreshes and hot-plug events.
 - Reapplies saved calibration after display topology changes and system resume.
@@ -80,6 +83,44 @@ return the selected display to a neutral LUT.
 - Right-clicking the tray icon provides profile switching, Show Window, and Exit commands.
 - Closing the main window exits the application completely.
 
+### Application profiles
+
+Select a display and profile, then click **Bind app...** (or right-click a profile and choose
+**Bind application...**) to select an `.exe`. Binding an application enables **Auto-switch**.
+When that executable becomes the foreground application, its profile applies to the bound
+display. Switching to another application restores that display's desktop settings.
+The effect covers the whole display, including other visible windows.
+
+Use **App rules...** to open the application configuration interface. Select any application
+on the left to see only its filters on the right. **Add app...** accepts any executable;
+**Add filter...** creates another named filter for that application. There are no built-in
+application categories or predefined filter lists.
+
+Choose **Use for app** to select the filter that applies when that application is active.
+The selected filter is enabled and placed ahead of the application's other filters for the
+same display. Each display can have its own selected filter. You can rename, edit, reorder,
+disable, or remove filters without replacing the application's other filters.
+
+**Edit settings...** adjusts Gamma, Brightness, Contrast, and RGB gains for the chosen filter.
+Editing a shared library profile creates an application filter copy so the original profile
+and other applications retain their settings. Changes remain in the configuration dialog
+until **Save**; **Cancel** discards them. Existing application bindings are loaded automatically.
+
+Paths are matched in full, so two applications with the same filename in different directories
+can use different profiles.
+Profiles can be renamed without losing their bindings. Deleting a profile removes its bindings.
+
+Opening the editor restores desktop settings and pauses switching while you edit. Pending
+adjustments save before automatic switching resumes when you return to another application.
+Manually selecting a profile or restoring defaults pauses automatic switching; click
+**Resume auto-switch** or use the tray menu to resume. Turning off automatic switching or
+exiting restores desktop settings. Automatic application changes do not overwrite saved
+profiles or per-display default settings.
+
+At launch, the display with the largest current resolution (`width × height`) is selected.
+Equal resolutions prefer the Windows primary display. Refreshing keeps your current display
+selected while it remains connected.
+
 ## Local data
 
 Profiles, per-display settings, captured base ramps, and diagnostic logs are stored locally under:
@@ -89,6 +130,7 @@ Profiles, per-display settings, captured base ramps, and diagnostic logs are sto
 ```
 
 The application does not require an online service to adjust displays or store profiles.
+Application bindings and the automatic-switching preference are stored separately in `app_rules.v1`.
 
 ## Project structure
 

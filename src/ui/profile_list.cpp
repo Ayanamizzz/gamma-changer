@@ -86,6 +86,7 @@ void refresh_preset_buttons(GuiState& gui) {
                             gui.profiles[gui.active_preset].id != kBuiltinProfileId;
     EnableWindow(gui.preset_save, can_create ? TRUE : FALSE);
     EnableWindow(gui.preset_delete, can_delete ? TRUE : FALSE);
+    update_automatic_profile_controls(gui);
 }
 
 bool persist_presets(GuiState& gui);
@@ -226,6 +227,7 @@ bool save_and_apply_current(GuiState& gui, bool automatic);
 
 void select_preset(GuiState& gui, std::size_t index) {
     if (index >= gui.profiles.size() || gui.active_preset >= gui.profiles.size()) return;
+    if (!pause_automatic_profiles(gui)) return;
     if (index == gui.active_preset) return;
     KillTimer(gui.window, kAutoSaveTimer);
     if (gui.session.dirty && !save_and_apply_current(gui, true)) return;
@@ -269,6 +271,7 @@ void undo_profile_switch(GuiState& gui) {
         set_status(gui, L"Nothing to restore", StatusTone::idle);
         return;
     }
+    if (!pause_automatic_profiles(gui)) return;
     if (!cancel_active_preview(gui)) return;
     const auto* display = selected_display(gui);
     if (!display) {
@@ -371,6 +374,7 @@ void delete_preset(GuiState& gui, std::size_t index) {
         }
     }
     if (preferences_changed) persist_profile_preferences(gui);
+    remove_application_profile_rules(gui, deleted_id);
     if (gui.session.undo_preset >= gui.profiles.size()) gui.session.profile_switch_undo_available = false;
     scroll_profile_into_view(gui, gui.active_preset);
     refresh_preset_buttons(gui);
