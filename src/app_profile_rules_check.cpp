@@ -1,10 +1,12 @@
 #include "app_profile_rules.h"
 
+#include <algorithm>
 #include <iostream>
 #include <string>
 #include <utility>
 
 #if defined(_WIN32)
+#include "foreground_app_watcher.h"
 #include "profile_store.h"
 
 #include <windows.h>
@@ -132,6 +134,58 @@ bool check_selection() {
     return ok;
 }
 
+bool check_binding() {
+    AppProfileConfig config{false, {
+        {L"C:\\Apps\\Browser.exe", L"screen-a", L"old", true, L"browser-old"},
+        {L"C:\\Games\\Game.exe", L"screen-a", L"old-game", true, L"game-old"},
+        {L"C:\\Apps\\Browser.exe", L"screen-b", L"other-screen", true, L"browser-other"},
+        {L"c:/apps/BROWSER.exe", L"screen-a", L"common", false, L"browser-common"},
+    }};
+    const std::wstring browser = bind_app_profile_rule(config,
+        {L"C:\\Apps\\Browser.exe", L"screen-a", L"common", true, {}, L"Common"});
+    const auto* rule = find_app_profile_rule(config, L"C:\\Apps\\Browser.exe", L"screen-a");
+    bool ok = expect(config.enabled && browser == L"browser-common" && config.rules.size() == 4 &&
+                         rule && rule->profile_id == L"common" && rule->enabled,
+                     L"binding an existing browser filter must activate it ahead of old bindings and enable switching");
+    ok &= expect(bind_app_profile_rule(config,
+                     {L"c:/apps/browser.exe", L"screen-a", L"common", true}) == browser && config.rules.size() == 4,
+                 L"repeated binding must reuse the same rule without adding duplicates");
+    bind_app_profile_rule(config, {L"C:\\Games\\Game.exe", L"screen-a", L"gaming", true});
+    const auto* game = find_app_profile_rule(config, L"C:\\Games\\Game.exe", L"screen-a");
+    const auto* browser_again = find_app_profile_rule(config, L"C:\\Apps\\Browser.exe", L"screen-a");
+    const auto* other = find_app_profile_rule(config, L"C:\\Apps\\Browser.exe", L"screen-b");
+    ok &= expect(game && game->profile_id == L"gaming" && browser_again && browser_again->profile_id == L"common" &&
+                     other && other->profile_id == L"other-screen",
+                 L"browser/game/browser matching must follow each chosen default while preserving other display bindings");
+    AppProfileRule edited = *browser_again;
+    edited.profile_id = L"new-common";
+    bind_app_profile_rule(config, edited);
+    rule = find_app_profile_rule(config, edited.executable_path, edited.display_id);
+    ok &= expect(rule && rule->id == browser && rule->profile_id == L"new-common" && config.rules.size() == 5,
+                 L"editing an assignment must preserve its id and select the newly chosen profile");
+    return ok;
+}
+
+bool check_fallback_defaults() {
+    AppProfileConfig config;
+    bool ok = expect(!find_app_fallback_profile(config, L"screen-a"),
+                     L"new configurations must keep desktop settings for unbound apps");
+    ok &= expect(set_app_fallback_profile(config, L"screen-a", L"common") &&
+                     !set_app_fallback_profile(config, L"screen-a", L"common") && config.fallback_profiles.size() == 1,
+                 L"choosing a fallback must keep one stable preference per display");
+    set_app_fallback_profile(config, L"screen-b", L"second-common");
+    ok &= expect(find_app_fallback_profile(config, L"screen-a")->profile_id == L"common" &&
+                     find_app_fallback_profile(config, L"screen-b")->profile_id == L"second-common",
+                 L"fallback preferences must remain editable when switching is off and independent across displays");
+    ok &= expect(set_app_fallback_profile(config, L"screen-a", L"") &&
+                     !find_app_fallback_profile(config, L"screen-a") && config.fallback_profiles.size() == 1,
+                 L"choosing desktop settings must clear only the selected display's fallback");
+    ok &= expect(remove_app_profile_rules_for_profile(config, L"second-common") == 1 &&
+                     config.fallback_profiles.empty(),
+                 L"deleting a fallback-only profile must remove and persist its preference");
+    return ok;
+}
+
 bool check_filter_settings() {
     const CalibrationSettings baseline{1.0, 0.0, 1.0, 1.0, 1.0, 1.0};
     const CalibrationSettings edited{1.3, -0.12, 1.2, 1.1, 0.9, 0.8};
@@ -184,6 +238,12 @@ bool check_filter_settings() {
     ok &= expect(!update_app_filter_settings(config, profiles, config.rules.back().id, edited) &&
                      profiles.size() == 4 && config.rules.back().profile_id == L"removed-template",
                  L"a missing template must leave the rule and profile collection unchanged");
+    set_app_fallback_profile(config, L"screen-a", L"app-filter-2");
+    ok &= expect(update_app_filter_settings(config, profiles, first_id, edited) && profiles.size() == 5 &&
+                     find_app_profile_rule_by_id(config, first_id)->profile_id == L"app-filter-4" &&
+                     find_app_fallback_profile(config, L"screen-a")->profile_id == L"app-filter-2" &&
+                     same_settings(profiles[2].settings, second_edit),
+                 L"editing a filter shared with the unassigned-app default must preserve the default's settings");
     return ok;
 }
 
@@ -286,7 +346,7 @@ bool check_store() {
     loaded = store.load_app_profile_config();
     ok &= expect(!loaded.enabled && loaded.rules.empty() && read_bytes(path) == corrupt,
                  L"a corrupt file must disable all rules without partial recovery or overwriting it");
-    write_bytes(path, "GammaChangerAppRules 3 1\n");
+    write_bytes(path, "GammaChangerAppRules 4 1\n");
     loaded = store.load_app_profile_config();
     ok &= expect(!loaded.enabled && loaded.rules.empty(),
                  L"a newer rule format must leave automatic switching disabled");
@@ -324,6 +384,32 @@ bool check_store() {
     ok &= expect(selected && selected->profile_id == L"night-profile" && selected->id == L"rule-2",
                  L"saved rule ordering must preserve the selected default among one application's filters");
 
+    AppProfileConfig assignments;
+    bind_app_profile_rule(assignments, {L"C:\\Apps\\Browser.exe", L"screen-a", L"old-common", true});
+    bind_app_profile_rule(assignments, {L"C:\\Games\\Game.exe", L"screen-a", L"gaming", true});
+    bind_app_profile_rule(assignments, {L"C:\\Apps\\Browser.exe", L"screen-a", L"common", true});
+    set_app_fallback_profile(assignments, L"screen-a", L"common");
+    set_app_fallback_profile(assignments, L"\u663e\u793a\u5668", L"\u9ed8\u8ba4\u6ee4\u955c");
+    ok &= expect(store.save_app_profile_config(assignments, error), L"assigned defaults must save");
+    loaded = store.load_app_profile_config();
+    const auto* browser_default = find_app_profile_rule(loaded, L"C:\\Apps\\Browser.exe", L"screen-a");
+    const auto* game_default = find_app_profile_rule(loaded, L"C:\\Games\\Game.exe", L"screen-a");
+    const auto* fallback = find_app_fallback_profile(loaded, L"screen-a");
+    const auto* unicode_fallback = find_app_fallback_profile(loaded, L"\u663e\u793a\u5668");
+    ok &= expect(loaded.enabled && browser_default && browser_default->profile_id == L"common" &&
+                     game_default && game_default->profile_id == L"gaming" && fallback && fallback->profile_id == L"common" &&
+                     unicode_fallback && unicode_fallback->profile_id == L"\u9ed8\u8ba4\u6ee4\u955c",
+                 L"version 3 must restore app bindings and Unicode fallback preferences after restart");
+    const std::string fallback_bytes = read_bytes(path);
+    invalid = assignments;
+    invalid.fallback_profiles.push_back(assignments.fallback_profiles.front());
+    ok &= expect(!store.save_app_profile_config(invalid, error) && read_bytes(path) == fallback_bytes,
+                 L"duplicate fallback displays must not replace the saved configuration");
+    write_bytes(path, "GammaChangerAppRules 3 1 2\n\"screen-a\" \"common\"\n");
+    loaded = store.load_app_profile_config();
+    ok &= expect(!loaded.enabled && loaded.rules.empty() && loaded.fallback_profiles.empty(),
+                 L"a truncated fallback section must not load a partial configuration");
+
     config.enabled = false;
     ok &= expect(store.save_app_profile_config(config, error),
                  L"disabled configurations must preserve their editable rules");
@@ -336,6 +422,64 @@ bool check_store() {
     return ok;
 }
 
+bool check_window_identity() {
+    WNDCLASSW window_class{};
+    window_class.lpfnWndProc = DefWindowProcW;
+    window_class.hInstance = GetModuleHandleW(nullptr);
+    window_class.lpszClassName = L"GammaChangerIdentityCheck";
+    if (!RegisterClassW(&window_class)) return expect(false, L"window fixture must register");
+    HWND window = CreateWindowExW(0, window_class.lpszClassName, L"Identity fixture", WS_OVERLAPPED,
+                                   0, 0, 100, 100, nullptr, nullptr, window_class.hInstance, nullptr);
+    bool ok = expect(window != nullptr, L"hidden window fixture must create");
+    if (window) {
+        wchar_t executable[32768]{};
+        GetModuleFileNameW(nullptr, executable, 32768);
+        DWORD error = ERROR_ACCESS_DENIED;
+        ok &= expect(normalize_executable_path(foreground_executable_path(window, &error)) ==
+                         normalize_executable_path(executable) && error == ERROR_SUCCESS,
+                     L"running-app capture must query the actual owning executable and clear stale errors");
+        ForegroundAppWatcher watcher;
+        ForegroundAppWatcher second;
+        ok &= expect(watcher.start(window, WM_APP + 1) && !second.start(window, WM_APP + 1),
+                     L"foreground events must have one watcher owner");
+        watcher.stop();
+        ok &= expect(second.start(window, WM_APP + 1), L"stopping must release the event hook");
+        second.stop();
+        DestroyWindow(window);
+        ok &= expect(foreground_executable_path(window, &error).empty() && error == ERROR_INVALID_WINDOW_HANDLE,
+                     L"a vanished application must report a lookup failure");
+    }
+    const auto make_running_window = [&](const wchar_t* title, DWORD extra_style) {
+        return CreateWindowExW(WS_EX_NOACTIVATE | extra_style, window_class.lpszClassName, title,
+                               WS_POPUP | WS_VISIBLE, -32000, -32000, 100, 50, nullptr, nullptr,
+                               window_class.hInstance, nullptr);
+    };
+    HWND first = make_running_window(L"Running fixture \u5e94\u7528 A", 0);
+    HWND second = make_running_window(L"Running fixture \u5e94\u7528 B", 0);
+    HWND tool = make_running_window(L"Tool fixture", WS_EX_TOOLWINDOW);
+    ok &= expect(first && second && tool, L"off-screen running-window fixtures must create without activation");
+    const auto applications = running_applications(0);
+    const auto own = std::count_if(applications.begin(), applications.end(), [](const RunningApplication& application) {
+        return application.process_id == GetCurrentProcessId();
+    });
+    const auto found = std::find_if(applications.begin(), applications.end(), [](const RunningApplication& application) {
+        return application.process_id == GetCurrentProcessId();
+    });
+    ok &= expect(own == 1 && found != applications.end() && found->error == ERROR_SUCCESS &&
+                     found->executable_path == foreground_executable_path(first) &&
+                     (found->window_title == L"Running fixture \u5e94\u7528 A" || found->window_title == L"Running fixture \u5e94\u7528 B"),
+                 L"running apps must preserve Unicode captions, group windows by executable, and ignore tool windows");
+    const auto filtered = running_applications();
+    ok &= expect(std::none_of(filtered.begin(), filtered.end(), [](const RunningApplication& application) {
+        return application.process_id == GetCurrentProcessId();
+    }), L"the running-app picker must exclude Gamma Changer's own process");
+    if (first) DestroyWindow(first);
+    if (second) DestroyWindow(second);
+    if (tool) DestroyWindow(tool);
+    UnregisterClassW(window_class.lpszClassName, window_class.hInstance);
+    return ok;
+}
+
 #endif
 
 }  // namespace
@@ -343,9 +487,12 @@ bool check_store() {
 int main() {
     bool ok = check_rules();
     ok &= check_selection();
+    ok &= check_binding();
+    ok &= check_fallback_defaults();
     ok &= check_filter_settings();
 #if defined(_WIN32)
     ok &= check_store();
+    ok &= check_window_identity();
 #endif
     if (!ok) return 1;
     std::wcout << L"application profile rule checks passed\n";

@@ -63,6 +63,30 @@ void set_app_profile_rule(AppProfileConfig& config, AppProfileRule rule) {
     config.rules.push_back(std::move(rule));
 }
 
+const DisplayProfilePreference* find_app_fallback_profile(const AppProfileConfig& config,
+                                                          const std::wstring& display_id) {
+    const auto found = std::find_if(config.fallback_profiles.begin(), config.fallback_profiles.end(),
+                                   [&](const DisplayProfilePreference& item) { return item.display_id == display_id; });
+    return found == config.fallback_profiles.end() ? nullptr : &*found;
+}
+
+bool set_app_fallback_profile(AppProfileConfig& config, const std::wstring& display_id,
+                              const std::wstring& profile_id) {
+    if (display_id.empty()) return false;
+    const auto found = std::find_if(config.fallback_profiles.begin(), config.fallback_profiles.end(),
+                                   [&](const DisplayProfilePreference& item) { return item.display_id == display_id; });
+    if (profile_id.empty()) {
+        if (found == config.fallback_profiles.end()) return false;
+        config.fallback_profiles.erase(found);
+    } else if (found == config.fallback_profiles.end()) {
+        config.fallback_profiles.push_back({display_id, profile_id});
+    } else {
+        if (found->profile_id == profile_id) return false;
+        found->profile_id = profile_id;
+    }
+    return true;
+}
+
 bool select_app_profile_rule(AppProfileConfig& config, const std::wstring& rule_id) {
     const auto chosen = std::find_if(config.rules.begin(), config.rules.end(),
                                     [&](const AppProfileRule& rule) { return rule.id == rule_id; });
@@ -79,6 +103,23 @@ bool select_app_profile_rule(AppProfileConfig& config, const std::wstring& rule_
     return true;
 }
 
+std::wstring bind_app_profile_rule(AppProfileConfig& config, AppProfileRule rule) {
+    if (rule.id.empty()) {
+        const std::wstring path = normalize_executable_path(rule.executable_path);
+        const auto existing = std::find_if(config.rules.begin(), config.rules.end(),
+                                           [&](const AppProfileRule& item) {
+            return item.display_id == rule.display_id && item.profile_id == rule.profile_id &&
+                   normalize_executable_path(item.executable_path) == path;
+        });
+        if (existing != config.rules.end()) rule.id = existing->id;
+    }
+    const std::wstring existing_id = rule.id;
+    set_app_profile_rule(config, std::move(rule));
+    const std::wstring id = existing_id.empty() ? config.rules.back().id : existing_id;
+    select_app_profile_rule(config, id);
+    return id;
+}
+
 bool update_app_filter_settings(AppProfileConfig& config, std::vector<Profile>& profiles,
                                 const std::wstring& rule_id,
                                 const CalibrationSettings& settings) {
@@ -90,7 +131,8 @@ bool update_app_filter_settings(AppProfileConfig& config, std::vector<Profile>& 
     const bool shared = std::count_if(config.rules.begin(), config.rules.end(),
                                      [&](const AppProfileRule& item) {
         return item.profile_id == current->id;
-    }) > 1;
+    }) > 1 || std::any_of(config.fallback_profiles.begin(), config.fallback_profiles.end(),
+                          [&](const DisplayProfilePreference& item) { return item.profile_id == current->id; });
     if (current->id.rfind(L"app-filter-", 0) == 0 && !shared) {
         current->settings = settings;
         return true;
@@ -115,12 +157,16 @@ bool update_app_filter_settings(AppProfileConfig& config, std::vector<Profile>& 
 
 std::size_t remove_app_profile_rules_for_profile(AppProfileConfig& config,
                                                 const std::wstring& profile_id) {
-    const std::size_t previous_count = config.rules.size();
+    const std::size_t previous_count = config.rules.size() + config.fallback_profiles.size();
     config.rules.erase(std::remove_if(config.rules.begin(), config.rules.end(),
                                      [&](const AppProfileRule& rule) {
         return rule.profile_id == profile_id;
     }), config.rules.end());
-    return previous_count - config.rules.size();
+    config.fallback_profiles.erase(std::remove_if(config.fallback_profiles.begin(), config.fallback_profiles.end(),
+                                                  [&](const DisplayProfilePreference& item) {
+        return item.profile_id == profile_id;
+    }), config.fallback_profiles.end());
+    return previous_count - config.rules.size() - config.fallback_profiles.size();
 }
 
 }  // namespace gamma_changer

@@ -77,6 +77,136 @@ std::wstring choose_executable(HWND owner) {
     return path;
 }
 
+struct RunningAppPickerState {
+    std::vector<RunningApplication> applications;
+    std::wstring preferred_path;
+    std::wstring selected_path;
+    bool filling = false;
+};
+
+const RunningApplication* selected_running_app(HWND dialog, const RunningAppPickerState& state) {
+    const int row = ListView_GetNextItem(GetDlgItem(dialog, IDC_RUNNING_APP_LIST), -1, LVNI_SELECTED);
+    return row >= 0 && static_cast<std::size_t>(row) < state.applications.size()
+        ? &state.applications[static_cast<std::size_t>(row)] : nullptr;
+}
+
+void update_running_app_selection(HWND dialog, const RunningAppPickerState& state) {
+    const auto* application = selected_running_app(dialog, state);
+    const bool can_select = application && !application->executable_path.empty();
+    EnableWindow(GetDlgItem(dialog, IDOK), can_select);
+    std::wstring hint = state.applications.empty()
+        ? L"No running application windows found. Use Browse to select an executable."
+        : L"Select an application to bind all its windows to a filter.";
+    if (can_select) hint = application->executable_path;
+    else if (application) {
+        hint = L"Cannot read this application's executable (process " + std::to_wstring(application->process_id) +
+               L", Win32 error " + std::to_wstring(application->error) + L"). Use Browse to select it manually.";
+    }
+    SetDlgItemTextW(dialog, IDC_RUNNING_APP_HINT, hint.c_str());
+}
+
+void fill_running_app_list(HWND dialog, RunningAppPickerState& state) {
+    state.filling = true;
+    HWND list = GetDlgItem(dialog, IDC_RUNNING_APP_LIST);
+    ListView_DeleteAllItems(list);
+    int selected = -1;
+    const std::wstring preferred = normalize_executable_path(state.preferred_path);
+    for (std::size_t index = 0; index < state.applications.size(); ++index) {
+        const auto& application = state.applications[index];
+        std::wstring name = application.executable_path.empty() ? L"Unavailable" : executable_name(application.executable_path);
+        LVITEMW item{};
+        item.mask = LVIF_TEXT;
+        item.iItem = static_cast<int>(index);
+        item.pszText = name.data();
+        const int row = ListView_InsertItem(list, &item);
+        std::wstring title = application.window_title;
+        std::wstring path = application.executable_path.empty()
+            ? L"Unavailable (error " + std::to_wstring(application.error) + L")" : application.executable_path;
+        ListView_SetItemText(list, row, 1, title.data());
+        ListView_SetItemText(list, row, 2, path.data());
+        if (!application.executable_path.empty()) {
+            if (selected < 0) selected = row;
+            if (!preferred.empty() && normalize_executable_path(application.executable_path) == preferred) selected = row;
+        }
+    }
+    if (selected < 0 && !state.applications.empty()) selected = 0;
+    if (selected >= 0) {
+        ListView_SetItemState(list, selected, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_EnsureVisible(list, selected, FALSE);
+    }
+    state.filling = false;
+    update_running_app_selection(dialog, state);
+}
+
+INT_PTR CALLBACK running_app_picker_proc(HWND dialog, UINT message, WPARAM wparam, LPARAM lparam) {
+    auto* state = reinterpret_cast<RunningAppPickerState*>(GetWindowLongPtrW(dialog, DWLP_USER));
+    if (message == WM_INITDIALOG) {
+        state = reinterpret_cast<RunningAppPickerState*>(lparam);
+        SetWindowLongPtrW(dialog, DWLP_USER, reinterpret_cast<LONG_PTR>(state));
+        HWND list = GetDlgItem(dialog, IDC_RUNNING_APP_LIST);
+        ListView_SetExtendedListViewStyle(list, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP);
+        RECT client{};
+        GetClientRect(list, &client);
+        const wchar_t* titles[] = {L"Application", L"Window", L"Executable path"};
+        const int portions[] = {20, 35, 45};
+        for (int column = 0; column < 3; ++column) {
+            LVCOLUMNW item{};
+            item.mask = LVCF_TEXT | LVCF_WIDTH;
+            item.pszText = const_cast<wchar_t*>(titles[column]);
+            item.cx = MulDiv(client.right - 20, portions[column], 100);
+            ListView_InsertColumn(list, column, &item);
+        }
+        fill_running_app_list(dialog, *state);
+        return TRUE;
+    }
+    if (!state) return FALSE;
+    if (message == WM_NOTIFY) {
+        const auto* notice = reinterpret_cast<NMHDR*>(lparam);
+        if (notice->idFrom == IDC_RUNNING_APP_LIST && !state->filling) {
+            if (notice->code == LVN_ITEMCHANGED) update_running_app_selection(dialog, *state);
+            else if (notice->code == NM_DBLCLK) SendMessageW(dialog, WM_COMMAND, IDOK, 0);
+        }
+    } else if (message == WM_COMMAND) {
+        switch (LOWORD(wparam)) {
+        case IDC_RUNNING_APP_REFRESH:
+            if (const auto* current = selected_running_app(dialog, *state)) state->preferred_path = current->executable_path;
+            state->applications = running_applications();
+            fill_running_app_list(dialog, *state);
+            return TRUE;
+        case IDC_RUNNING_APP_BROWSE: {
+            const std::wstring path = choose_executable(dialog);
+            if (!path.empty()) {
+                state->selected_path = path;
+                EndDialog(dialog, IDOK);
+            }
+            return TRUE;
+        }
+        case IDOK: {
+            const auto* application = selected_running_app(dialog, *state);
+            if (application && !application->executable_path.empty()) {
+                state->selected_path = application->executable_path;
+                EndDialog(dialog, IDOK);
+            }
+            return TRUE;
+        }
+        case IDCANCEL:
+            EndDialog(dialog, IDCANCEL);
+            return TRUE;
+        }
+    } else if (message == WM_CLOSE) {
+        EndDialog(dialog, IDCANCEL);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+std::wstring choose_running_application(HWND owner, const std::wstring& preferred_path) {
+    RunningAppPickerState state{running_applications(), preferred_path, {}, false};
+    const INT_PTR result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_RUNNING_APPS), owner,
+                                           running_app_picker_proc, reinterpret_cast<LPARAM>(&state));
+    return result == IDOK ? state.selected_path : L"";
+}
+
 std::wstring control_text(HWND control) {
     const int length = GetWindowTextLengthW(control);
     std::wstring text(static_cast<std::size_t>(length) + 1, L'\0');
@@ -165,6 +295,14 @@ INT_PTR CALLBACK rule_editor_proc(HWND dialog, UINT message, WPARAM wparam, LPAR
             if (!path.empty()) SetDlgItemTextW(dialog, IDC_RULE_EXECUTABLE, path.c_str());
             return TRUE;
         }
+        case IDC_RULE_CAPTURE_APP:
+            if (state->gui.foreground_application.empty()) {
+                SetDlgItemTextW(dialog, IDC_RULE_HINT,
+                                L"Activate the running application or game, then return here to capture its executable.");
+            } else {
+                SetDlgItemTextW(dialog, IDC_RULE_EXECUTABLE, state->gui.foreground_application.c_str());
+            }
+            return TRUE;
         case IDOK: {
             const std::wstring path = control_text(GetDlgItem(dialog, IDC_RULE_EXECUTABLE));
             const LRESULT profile = SendDlgItemMessageW(dialog, IDC_RULE_PROFILE, CB_GETCURSEL, 0, 0);
@@ -228,7 +366,73 @@ struct RulesDialogState {
     std::vector<std::size_t> visible_rules;
     bool filling = false;
     bool resume_on_save = false;
+    std::vector<std::wstring> fallback_display_ids{};
+    std::vector<std::wstring> fallback_profile_ids{};
 };
+
+std::wstring fallback_display_id(HWND dialog, const RulesDialogState& state) {
+    const LRESULT selected = SendDlgItemMessageW(dialog, IDC_FALLBACK_DISPLAY, CB_GETCURSEL, 0, 0);
+    return selected >= 0 && static_cast<std::size_t>(selected) < state.fallback_display_ids.size()
+        ? state.fallback_display_ids[static_cast<std::size_t>(selected)] : L"";
+}
+
+bool read_fallback_choice(HWND dialog, RulesDialogState& state) {
+    const LRESULT selected = SendDlgItemMessageW(dialog, IDC_FALLBACK_PROFILE, CB_GETCURSEL, 0, 0);
+    if (selected < 0 || static_cast<std::size_t>(selected) >= state.fallback_profile_ids.size()) return false;
+    const std::wstring display_id = fallback_display_id(dialog, state);
+    if (display_id.empty()) return false;
+    set_app_fallback_profile(state.config, display_id, state.fallback_profile_ids[static_cast<std::size_t>(selected)]);
+    return true;
+}
+
+void fill_fallback_profiles(HWND dialog, RulesDialogState& state) {
+    HWND combo = GetDlgItem(dialog, IDC_FALLBACK_PROFILE);
+    SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+    state.fallback_profile_ids = {L""};
+    SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Desktop settings (default)"));
+    const std::wstring display_id = fallback_display_id(dialog, state);
+    const auto* preference = find_app_fallback_profile(state.config, display_id);
+    int selected = 0;
+    for (const auto& profile : state.profiles) {
+        if (!profile.saved) continue;
+        if (preference && preference->profile_id == profile.id) selected = static_cast<int>(state.fallback_profile_ids.size());
+        state.fallback_profile_ids.push_back(profile.id);
+        SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(profile.name.c_str()));
+    }
+    SendMessageW(combo, CB_SETCURSEL, selected, 0);
+    EnableWindow(combo, !display_id.empty());
+}
+
+void fill_fallback_controls(HWND dialog, RulesDialogState& state) {
+    HWND combo = GetDlgItem(dialog, IDC_FALLBACK_DISPLAY);
+    int selected = 0;
+    for (std::size_t index = 0; index < state.gui.displays.size(); ++index) {
+        const auto& display = state.gui.displays[index];
+        const std::wstring label = display_label(display, index);
+        state.fallback_display_ids.push_back(display_storage_id(display));
+        SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
+        if (static_cast<int>(index) == state.gui.active_display_index) selected = static_cast<int>(index);
+    }
+    for (const auto& preference : state.config.fallback_profiles) {
+        if (std::find(state.fallback_display_ids.begin(), state.fallback_display_ids.end(), preference.display_id) !=
+            state.fallback_display_ids.end()) continue;
+        state.fallback_display_ids.push_back(preference.display_id);
+        const std::wstring label = L"Disconnected display - " + preference.display_id;
+        SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
+    }
+    if (!state.fallback_display_ids.empty()) SendMessageW(combo, CB_SETCURSEL, selected, 0);
+    fill_fallback_profiles(dialog, state);
+}
+
+std::wstring assign_application_filter(RulesDialogState& state, AppProfileRule rule) {
+    if (rule.enabled) {
+        state.resume_on_save = true;
+        return bind_app_profile_rule(state.config, std::move(rule));
+    }
+    const std::wstring existing_id = rule.id;
+    set_app_profile_rule(state.config, std::move(rule));
+    return existing_id.empty() ? state.config.rules.back().id : existing_id;
+}
 
 struct FilterSettingsState {
     CalibrationSettings settings;
@@ -291,9 +495,14 @@ void edit_filter_settings(HWND dialog, RulesDialogState& state, std::size_t inde
                         dialog, filter_settings_proc, reinterpret_cast<LPARAM>(&settings)) != IDOK) return;
     if (settings_equal(settings.settings, current->settings)) return;
 
-    state.profiles_changed =
-        update_app_filter_settings(state.config, state.profiles, rule.id, settings.settings) ||
-        state.profiles_changed;
+    const std::wstring rule_id = rule.id;
+    const bool enabled = rule.enabled;
+    const bool changed = update_app_filter_settings(state.config, state.profiles, rule_id, settings.settings);
+    state.profiles_changed = changed || state.profiles_changed;
+    if (changed && enabled) {
+        select_app_profile_rule(state.config, rule_id);
+        state.resume_on_save = true;
+    }
 }
 
 void update_default_labels(HWND dialog, const RulesDialogState& state) {
@@ -302,7 +511,7 @@ void update_default_labels(HWND dialog, const RulesDialogState& state) {
     for (std::size_t row = 0; row < state.visible_rules.size(); ++row) {
         const auto& rule = state.config.rules[state.visible_rules[row]];
         std::wstring label = rule.enabled && displays.insert(rule.display_id).second
-            ? L"Selected" : L"";
+            ? L"Default" : L"";
         ListView_SetItemText(list, static_cast<int>(row), 3, label.data());
     }
 }
@@ -354,6 +563,7 @@ void update_rule_actions(HWND dialog, const RulesDialogState& state) {
             return profile.saved;
         });
     EnableWindow(GetDlgItem(dialog, IDC_ADD_APPLICATION), can_add);
+    EnableWindow(GetDlgItem(dialog, IDC_ADD_ACTIVE_APPLICATION), can_add);
     EnableWindow(GetDlgItem(dialog, IDC_ADD_APP_FILTER), can_add && !state.selected_application.empty());
     EnableWindow(GetDlgItem(dialog, IDC_REMOVE_APPLICATION), !state.selected_application.empty());
 }
@@ -434,8 +644,13 @@ void fill_application_list(HWND dialog, RulesDialogState& state,
 void read_rule_checks(HWND dialog, RulesDialogState& state) {
     HWND list = GetDlgItem(dialog, IDC_APP_RULE_LIST);
     for (std::size_t row = 0; row < state.visible_rules.size(); ++row) {
-        state.config.rules[state.visible_rules[row]].enabled =
-            ListView_GetCheckState(list, static_cast<int>(row)) != FALSE;
+        auto& rule = state.config.rules[state.visible_rules[row]];
+        const bool enabled = ListView_GetCheckState(list, static_cast<int>(row)) != FALSE;
+        if (enabled && !rule.enabled) {
+            state.config.enabled = true;
+            state.resume_on_save = true;
+        }
+        rule.enabled = enabled;
     }
 }
 
@@ -449,7 +664,7 @@ INT_PTR CALLBACK rules_dialog_proc(HWND dialog, UINT message, WPARAM wparam, LPA
                                                LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP);
         RECT client{};
         GetClientRect(list, &client);
-        const wchar_t* titles[] = {L"Filter", L"Profile", L"Display", L"Active"};
+        const wchar_t* titles[] = {L"Filter", L"Profile", L"Display", L"Default"};
         const int portions[] = {25, 25, 32, 18};
         for (int column = 0; column < 4; ++column) {
             LVCOLUMNW item{};
@@ -459,6 +674,7 @@ INT_PTR CALLBACK rules_dialog_proc(HWND dialog, UINT message, WPARAM wparam, LPA
             ListView_InsertColumn(list, column, &item);
         }
         fill_application_list(dialog, *state);
+        fill_fallback_controls(dialog, *state);
         return TRUE;
     }
     if (!state) return FALSE;
@@ -480,6 +696,18 @@ INT_PTR CALLBACK rules_dialog_proc(HWND dialog, UINT message, WPARAM wparam, LPA
         return FALSE;
     }
     if (message == WM_COMMAND) {
+        if (LOWORD(wparam) == IDC_FALLBACK_DISPLAY && HIWORD(wparam) == CBN_SELCHANGE) {
+            fill_fallback_profiles(dialog, *state);
+            return TRUE;
+        }
+        if (LOWORD(wparam) == IDC_FALLBACK_PROFILE &&
+            (HIWORD(wparam) == CBN_SELCHANGE || HIWORD(wparam) == CBN_SELENDOK)) {
+            if (read_fallback_choice(dialog, *state)) {
+                state->config.enabled = true;
+                state->resume_on_save = true;
+            }
+            return TRUE;
+        }
         if (LOWORD(wparam) == IDC_APPLICATION_LIST && HIWORD(wparam) == LBN_SELCHANGE) {
             read_rule_checks(dialog, *state);
             const LRESULT selected = SendDlgItemMessageW(dialog, IDC_APPLICATION_LIST, LB_GETCURSEL, 0, 0);
@@ -499,17 +727,22 @@ INT_PTR CALLBACK rules_dialog_proc(HWND dialog, UINT message, WPARAM wparam, LPA
             : state->visible_rules[static_cast<std::size_t>(selected)];
         switch (LOWORD(wparam)) {
         case IDC_ADD_APPLICATION:
+        case IDC_ADD_ACTIVE_APPLICATION:
         case IDC_ADD_APP_FILTER: {
             const std::wstring path = LOWORD(wparam) == IDC_ADD_APPLICATION
-                ? choose_executable(dialog) : state->selected_application;
-            if (path.empty()) return TRUE;
+                ? choose_running_application(dialog, state->gui.foreground_application) : LOWORD(wparam) == IDC_ADD_ACTIVE_APPLICATION
+                ? state->gui.foreground_application : state->selected_application;
+            if (path.empty()) {
+                if (LOWORD(wparam) == IDC_ADD_ACTIVE_APPLICATION) {
+                    SetDlgItemTextW(dialog, IDC_APP_RULES_HINT,
+                                    L"Activate the running application or game, then return here and click Add active app.");
+                }
+                return TRUE;
+            }
             AppProfileRule rule = new_application_rule(state->gui, path);
             if (edit_application_rule(state->gui, dialog, rule, state->profiles)) {
-                set_app_profile_rule(state->config, rule);
-                state->config.enabled = true;
-                state->resume_on_save = true;
-                fill_application_list(dialog, *state, rule.executable_path,
-                                       state->config.rules.back().id);
+                const std::wstring id = assign_application_filter(*state, rule);
+                fill_application_list(dialog, *state, rule.executable_path, id);
             }
             return TRUE;
         }
@@ -517,8 +750,8 @@ INT_PTR CALLBACK rules_dialog_proc(HWND dialog, UINT message, WPARAM wparam, LPA
             if (index != kNoProfile) {
                 AppProfileRule rule = state->config.rules[index];
                 if (edit_application_rule(state->gui, dialog, rule, state->profiles)) {
-                    set_app_profile_rule(state->config, rule);
-                    fill_application_list(dialog, *state, rule.executable_path, rule.id);
+                    const std::wstring id = assign_application_filter(*state, rule);
+                    fill_application_list(dialog, *state, rule.executable_path, id);
                 }
             }
             return TRUE;
@@ -535,6 +768,7 @@ INT_PTR CALLBACK rules_dialog_proc(HWND dialog, UINT message, WPARAM wparam, LPA
                 const std::wstring id = state->config.rules[index].id;
                 edit_filter_settings(dialog, *state, index);
                 fill_rule_list(dialog, *state, id);
+                fill_fallback_profiles(dialog, *state);
             }
             return TRUE;
         case IDC_REMOVE_APP_RULE:
@@ -565,6 +799,7 @@ INT_PTR CALLBACK rules_dialog_proc(HWND dialog, UINT message, WPARAM wparam, LPA
             }
             return TRUE;
         case IDOK:
+            read_fallback_choice(dialog, *state);
             if (save_rules_dialog(*state)) EndDialog(dialog, IDOK);
             else SetDlgItemTextW(dialog, IDC_APP_RULES_HINT, control_text(state->gui.status).c_str());
             return TRUE;
@@ -595,6 +830,8 @@ void update_automatic_profile_controls(GuiState& gui) {
     else if (gui.auto_switch_paused) text = L"Paused for manual adjustments";
     else if (gui.app_rules_dialog_open || editor_in_foreground(gui)) {
         text = L"Paused while editing";
+    } else if (gui.foreground_lookup_error != ERROR_SUCCESS) {
+        text = L"App identification failed (error " + std::to_wstring(gui.foreground_lookup_error) + L")";
     } else {
         const auto active = display
             ? gui.automatic_display_profiles.find(display_storage_id(*display))
@@ -606,7 +843,9 @@ void update_automatic_profile_controls(GuiState& gui) {
         const std::wstring name = rule && !rule->name.empty() ? rule->name
             : profile ? profile->name : L"";
         text = profile ? executable_name(gui.foreground_application) + L" \u2192 " + name
-                       : L"Desktop settings";
+                       : gui.foreground_application.empty() ? L"Desktop settings"
+                       : executable_name(gui.foreground_application) + L": no assigned filter";
+        if (profile && active->second.rule_id.empty()) text += L" (default)";
     }
     SetWindowTextW(gui.auto_switch_status, text.c_str());
     invalidate_control_background(gui, gui.auto_switch_status);
@@ -619,8 +858,12 @@ void initialize_automatic_profiles(GuiState& gui) {
     schedule_automatic_profiles(gui);
 }
 
-void schedule_automatic_profiles(GuiState& gui) {
-    SetTimer(gui.window, kForegroundProfileTimer, 150, nullptr);
+void schedule_automatic_profiles(GuiState& gui, bool force) {
+    gui.foreground_reapply_requested = gui.foreground_reapply_requested || force;
+    if (!gui.foreground_evaluation_pending) {
+        gui.foreground_evaluation_pending =
+            SetTimer(gui.window, kForegroundProfileTimer, 150, nullptr) != 0;
+    }
 }
 
 bool restore_automatic_profiles(GuiState& gui) {
@@ -637,7 +880,7 @@ bool restore_automatic_profiles(GuiState& gui) {
             continue;
         }
         std::wstring error;
-        if (!DisplayManager::write_ramp(*display, active->second.desktop_ramp, error)) {
+        if (!gui.ramp_backend.write(*display, active->second.desktop_ramp, error)) {
             set_status(gui, L"Could not restore desktop settings: " + error, StatusTone::error);
             success = false;
             ++active;
@@ -653,11 +896,15 @@ bool restore_automatic_profiles(GuiState& gui) {
 }
 
 void evaluate_automatic_profiles(GuiState& gui, bool force) {
-    if (gui.app_rules_dialog_open) return;
     DWORD process = 0;
     HWND foreground = GetForegroundWindow();
     GetWindowThreadProcessId(foreground, &process);
     const bool own_process = process == GetCurrentProcessId();
+    const std::wstring path = own_process ? gui.foreground_application
+        : foreground ? foreground_executable_path(foreground, &gui.foreground_lookup_error) : std::wstring{};
+    // Keep the last external executable available while editing app assignments.
+    if (!own_process && foreground) gui.foreground_application = path;
+    if (gui.app_rules_dialog_open) return;
     if (own_process) {
         // The visible editor works with the user's desktop profile. Hidden tray
         // menus retain the last application's effect until focus returns.
@@ -673,30 +920,35 @@ void evaluate_automatic_profiles(GuiState& gui, bool force) {
         update_automatic_profile_controls(gui);
         return;
     }
-    const std::wstring path = own_process ? gui.foreground_application
-                                          : foreground_executable_path(foreground);
-    if (path.empty()) {
-        if (foreground) {
-            restore_automatic_profiles(gui);
-            gui.foreground_application.clear();
-            update_automatic_profile_controls(gui);
-        }
-        return;
-    }
+    if (path.empty() && !foreground) return;
     normalize_all_edits(gui);
     if (gui.session.dirty && !save_and_apply_current(gui, true)) return;
     KillTimer(gui.window, kPreviewTimer);
     if (!cancel_active_preview(gui)) return;
+    apply_application_profiles(gui, path, force);
+    if (path.empty()) {
+        set_status(gui, L"Could not identify the active application (Win32 error " +
+                        std::to_wstring(gui.foreground_lookup_error) + L"); using the unassigned-app default",
+                   StatusTone::error);
+    }
+}
+
+void apply_application_profiles(GuiState& gui, const std::wstring& path, bool force) {
     gui.foreground_application = path;
     for (const auto& display : gui.displays) {
         const std::wstring id = display_storage_id(display);
         const auto* rule = find_app_profile_rule(gui.app_profile_config, path, id);
         const auto* profile = rule ? profile_by_id(gui, rule->profile_id) : nullptr;
+        const bool fallback = !profile || !profile->saved;
+        if (fallback && gui.app_profile_config.enabled) {
+            const auto* preference = find_app_fallback_profile(gui.app_profile_config, id);
+            profile = preference ? profile_by_id(gui, preference->profile_id) : nullptr;
+        }
         auto active = gui.automatic_display_profiles.find(id);
         std::wstring error;
         if (!profile || !profile->saved) {
             if (active != gui.automatic_display_profiles.end() &&
-                DisplayManager::write_ramp(display, active->second.desktop_ramp, error)) {
+                gui.ramp_backend.write(display, active->second.desktop_ramp, error)) {
                 gui.automatic_display_profiles.erase(active);
                 set_status(gui, L"Desktop settings restored", StatusTone::success);
             } else if (!error.empty()) {
@@ -708,12 +960,12 @@ void evaluate_automatic_profiles(GuiState& gui, bool force) {
         if (!force && active != gui.automatic_display_profiles.end() &&
             active->second.profile_id == profile->id &&
             settings_equal(active->second.settings, profile->settings)) {
-            active->second.rule_id = rule->id;
+            active->second.rule_id = fallback ? L"" : rule->id;
             continue;
         }
         AutomaticDisplayProfile next;
         if (active == gui.automatic_display_profiles.end()) {
-            if (!DisplayManager::read_ramp(display, next.desktop_ramp, error)) {
+            if (!gui.ramp_backend.read(display, next.desktop_ramp, error)) {
                 set_status(gui, L"Could not read desktop settings: " + error, StatusTone::error);
                 continue;
             }
@@ -725,10 +977,11 @@ void evaluate_automatic_profiles(GuiState& gui, bool force) {
             continue;
         }
         next.profile_id = profile->id;
-        next.rule_id = rule->id;
+        next.rule_id = fallback ? L"" : rule->id;
         next.settings = profile->settings;
         gui.automatic_display_profiles[id] = std::move(next);
-        set_status(gui, L"Auto: " + executable_name(path) + L" \u2192 " + rule_name(gui, *rule),
+        const std::wstring name = fallback ? L"Default: " + profile->name : rule_name(gui, *rule);
+        set_status(gui, L"Auto: " + executable_name(path) + L" \u2192 " + name,
                    StatusTone::success);
     }
     update_automatic_profile_controls(gui);
@@ -774,16 +1027,16 @@ void bind_application_profile(GuiState& gui, std::size_t profile_index) {
     const std::wstring profile_id = gui.profiles[profile_index].id;
     const std::wstring profile_name = gui.profiles[profile_index].name;
     gui.app_rules_dialog_open = true;
-    const std::wstring path = choose_executable(gui.window);
+    const std::wstring path = choose_running_application(gui.window, gui.foreground_application);
     AppProfileRule rule{path, display_id, profile_id, true, {}, profile_name};
     const bool accepted = !path.empty() && edit_application_rule(gui, gui.window, rule, gui.profiles);
     gui.app_rules_dialog_open = false;
     if (accepted && ensure_foreground_watcher(gui)) {
         AppProfileConfig config = gui.app_profile_config;
-        set_app_profile_rule(config, rule);
-        config.enabled = true;
+        if (rule.enabled) bind_app_profile_rule(config, rule);
+        else set_app_profile_rule(config, rule);
         if (save_app_config(gui, config)) {
-            gui.auto_switch_paused = false;
+            if (rule.enabled) gui.auto_switch_paused = false;
             set_status(gui, executable_name(rule.executable_path) + L" bound to " + rule.name,
                        StatusTone::success);
         }

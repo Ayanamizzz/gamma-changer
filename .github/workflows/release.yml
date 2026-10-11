@@ -14,6 +14,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate release tag
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_NAME -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
+            throw "Release tags must be semantic versions, for example v2.6.1."
+          }
+
       - name: Configure
         run: cmake -S . -B build -A x64
 
@@ -34,7 +41,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $tag = "${{ github.ref_name }}"
+          $tag = $env:GITHUB_REF_NAME
           $exe = (Resolve-Path "build\Release\gamma_changer_gui.exe").Path
           $staging = Join-Path $env:RUNNER_TEMP ("gamma-changer-" + $tag)
           New-Item -ItemType Directory -Force -Path $staging | Out-Null
@@ -55,17 +62,28 @@ jobs:
               -Destination $env:RUNNER_TEMP -Force
 
       - name: Create draft release
+        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "${{ github.ref_name }}"
+          $ErrorActionPreference = "Stop"
+          $tag = $env:GITHUB_REF_NAME
           $zip = "gamma-changer-$tag-win-x64.zip"
           $notes = Join-Path $env:RUNNER_TEMP "release-notes.txt"
+          $versionNotes = Join-Path "docs/releases" "$tag.md"
+          $signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $env:RUNNER_TEMP "gamma_changer_gui.exe")
+          $signing = switch ($signature.Status) {
+            "Valid" { "signed executable" }
+            "NotSigned" { "unsigned executable" }
+            default { throw "Executable signature validation failed: $($signature.Status)" }
+          }
+          $content = if (Test-Path -LiteralPath $versionNotes) { Get-Content -LiteralPath $versionNotes -Raw } else { "" }
           @(
+            $content,
             "## Assets",
             "",
-            "- $zip — signed with SHA256 when a signing certificate is configured",
-            "- gamma_changer_gui.exe — unsigned/raw executable",
+            "- $zip — Windows x64 portable package ($signing)",
+            "- gamma_changer_gui.exe — $signing (same binary as in the ZIP)",
             "- SHA256SUMS.txt — checksums for the assets above",
             "- Source code archives are attached automatically by GitHub"
           ) | Set-Content -LiteralPath $notes -Encoding UTF8
@@ -74,14 +92,20 @@ jobs:
             (Join-Path $env:RUNNER_TEMP "gamma_changer_gui.exe"),
             (Join-Path $env:RUNNER_TEMP "SHA256SUMS.txt")
           )
-          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          $existingDraft = gh release view $tag --repo $env:GITHUB_REPOSITORY --json isDraft --jq '.isDraft' 2>$null
           if ($LASTEXITCODE -eq 0) {
+            if ($existingDraft -eq "false") {
+              Write-Host "Release $tag is already published; preserving its notes and assets."
+              exit 0
+            }
             gh release upload $tag $assets --repo $env:GITHUB_REPOSITORY --clobber
+            if ($LASTEXITCODE -ne 0) { throw "Release asset upload failed." }
             gh release edit $tag `
               --repo $env:GITHUB_REPOSITORY `
               --title "Gamma Changer $tag" `
               --notes-file $notes `
               --draft
+            if ($LASTEXITCODE -ne 0) { throw "Draft release update failed." }
           } else {
             gh release create $tag `
               --repo $env:GITHUB_REPOSITORY `
@@ -89,4 +113,5 @@ jobs:
               --title "Gamma Changer $tag" `
               --notes-file $notes `
               $assets
+            if ($LASTEXITCODE -ne 0) { throw "Draft release creation failed." }
           }

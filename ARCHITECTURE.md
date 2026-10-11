@@ -63,12 +63,26 @@ Rules:
   ownership.
 - `app_profile_rules`: pure application filter matching, default selection, and
   shared-template copying for independent application settings. Rules reference
-  stable IDs and accept user-selected executables and names.
+  stable IDs and accept user-selected executables and names. Binding a filter selects
+  it as the application's default and reuses an existing matching app/display/profile rule.
+  Per-display fallback preferences apply to unbound applications; missing preferences
+  restore desktop calibration. Fallback references participate in shared-template copying
+  and profile deletion. The version 3 rule format saves fallback preferences with app bindings.
 - `src/ui/app_profiles.cpp`: application-specific configuration views, filter
   and parameter dialogs, and foreground switching. Dialog edits stay in a draft
   until saved; runtime application preserves the desktop LUT.
 - `foreground_app_watcher`: Win32 foreground notifications delivered to the UI
-  message loop, with no polling or separate service.
+  message loop, with no polling or separate service. Focus events request a runtime
+  reapply and are coalesced over a fixed 150 ms interval. The rule editor can bind
+  the last observed executable directly and reports process-query errors.
+- `running_applications`: reads visible desktop windows and groups them by complete
+  executable path. Tool windows, the desktop shell, cloaked windows and the current
+  process are excluded. Unreadable process paths retain a title and error code.
+  The application picker takes a snapshot and refreshes it on request; titles are
+  display metadata and never become matching conditions or saved bindings.
+- `apply_application_profiles`: applies resolved executable assignments using the
+  same `DisplayRampBackend` as the calibration controller. Its browser/game/desktop
+  transitions can be exercised with a fake backend without changing a real display.
 - `display_selection`: pure highest-pixel-count default selection; refreshing
   preserves the selected physical display.
 
@@ -87,6 +101,11 @@ Rules:
 2. Integration-test persistence with temporary directories.
 3. Transaction-test calibration with `DisplayRampBackend` fakes.
 4. Keep GUI automation limited to message-level smoke tests; avoid pixel tests.
+
+`foreground_profile_check` runs the actual foreground scheduling and application-dialog
+paths against a fake ramp backend, with isolated temporary profile storage. It covers
+application/default transitions, non-starving event coalescing, running-app selection,
+and save/cancel behavior for enabling rules and editing software filter settings.
 
 ## Release engineering
 

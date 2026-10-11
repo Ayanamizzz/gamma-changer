@@ -157,15 +157,15 @@ constexpr std::size_t kMaxPresetNameLength = 64;
 
 constexpr std::size_t kMaxFilenameStem = 80;
 
+bool valid_app_profile_field(const std::wstring& value) {
+    return !value.empty() && value.find_first_of(L"\t\r\n") == std::wstring::npos &&
+           value.find(L'\0') == std::wstring::npos;
+}
+
 bool valid_app_profile_rule(const AppProfileRule& rule) {
-    const auto valid_field = [](const std::wstring& value) {
-        return !value.empty() &&
-               value.find_first_of(L"\t\r\n") == std::wstring::npos &&
-               value.find(L'\0') == std::wstring::npos;
-    };
-    return valid_field(rule.id) && valid_field(rule.executable_path) &&
-           valid_field(rule.display_id) && valid_field(rule.profile_id) &&
-           (rule.name.empty() || valid_field(rule.name));
+    return valid_app_profile_field(rule.id) && valid_app_profile_field(rule.executable_path) &&
+           valid_app_profile_field(rule.display_id) && valid_app_profile_field(rule.profile_id) &&
+           (rule.name.empty() || valid_app_profile_field(rule.name));
 }
 
 // FNV-1a 64-bit: stable across standard-library versions and platforms, unlike
@@ -620,14 +620,27 @@ AppProfileConfig ProfileStore::load_app_profile_config() const {
     std::size_t version = 0;
     int enabled = 0;
     if (!(input >> header >> version >> enabled) || header != L"GammaChangerAppRules" ||
-        (version != 1 && version != 2) || (enabled != 0 && enabled != 1)) {
+        (version < 1 || version > 3) || (enabled != 0 && enabled != 1)) {
         return {};
     }
+    std::size_t fallback_count = 0;
+    if (version == 3 && (!(input >> fallback_count) || fallback_count > kMaxAppProfileRules)) return {};
     std::wstring line;
     std::getline(input, line);
     if (line.find_first_not_of(L" \t\r") != std::wstring::npos) return {};
     config.enabled = enabled != 0;
 
+    std::unordered_set<std::wstring> fallback_displays;
+    for (std::size_t index = 0; index < fallback_count; ++index) {
+        if (!std::getline(input, line)) return {};
+        std::wistringstream row(line);
+        DisplayProfilePreference preference;
+        if (!(row >> std::quoted(preference.display_id) >> std::quoted(preference.profile_id))) return {};
+        row >> std::ws;
+        if (!row.eof() || !valid_app_profile_field(preference.display_id) ||
+            !valid_app_profile_field(preference.profile_id) || !fallback_displays.insert(preference.display_id).second) return {};
+        config.fallback_profiles.push_back(std::move(preference));
+    }
     std::unordered_set<std::wstring> ids;
     while (std::getline(input, line)) {
         if (line.find_first_not_of(L" \t\r") == std::wstring::npos) continue;
@@ -635,7 +648,7 @@ AppProfileConfig ProfileStore::load_app_profile_config() const {
         std::wistringstream row(line);
         AppProfileRule rule;
         int rule_enabled = 0;
-        if (version == 2 && !(row >> std::quoted(rule.id) >> std::quoted(rule.name))) return {};
+        if (version >= 2 && !(row >> std::quoted(rule.id) >> std::quoted(rule.name))) return {};
         if (!(row >> std::quoted(rule.executable_path) >> std::quoted(rule.display_id)
                   >> std::quoted(rule.profile_id) >> rule_enabled)) {
             return {};
@@ -654,8 +667,8 @@ AppProfileConfig ProfileStore::load_app_profile_config() const {
 
 bool ProfileStore::save_app_profile_config(const AppProfileConfig& config,
                                           std::wstring& error) const {
-    if (config.rules.size() > kMaxAppProfileRules) {
-        error = L"refusing to save more than 1024 application profile rules";
+    if (config.rules.size() > kMaxAppProfileRules || config.fallback_profiles.size() > kMaxAppProfileRules) {
+        error = L"refusing to save more than 1024 application rules or display defaults";
         return false;
     }
     std::unordered_set<std::wstring> ids;
@@ -670,8 +683,22 @@ bool ProfileStore::save_app_profile_config(const AppProfileConfig& config,
         }
     }
 
+    std::unordered_set<std::wstring> fallback_displays;
+    for (const auto& preference : config.fallback_profiles) {
+        if (!valid_app_profile_field(preference.display_id) || !valid_app_profile_field(preference.profile_id) ||
+            !fallback_displays.insert(preference.display_id).second) {
+            error = L"refusing to save invalid or duplicate unassigned-application defaults";
+            return false;
+        }
+    }
     std::wostringstream content;
-    content << L"GammaChangerAppRules 2 " << (config.enabled ? 1 : 0) << L'\n';
+    const bool has_fallback = !config.fallback_profiles.empty();
+    content << L"GammaChangerAppRules " << (has_fallback ? 3 : 2) << L' ' << (config.enabled ? 1 : 0);
+    if (has_fallback) content << L' ' << config.fallback_profiles.size();
+    content << L'\n';
+    for (const auto& preference : config.fallback_profiles) {
+        content << std::quoted(preference.display_id) << L' ' << std::quoted(preference.profile_id) << L'\n';
+    }
     for (const auto& rule : config.rules) {
         content << std::quoted(rule.id) << L' ' << std::quoted(rule.name) << L' '
                 << std::quoted(rule.executable_path) << L' '

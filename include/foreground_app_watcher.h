@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <string>
+#include <vector>
 
 namespace gamma_changer {
 
@@ -27,6 +28,16 @@ private:
     UINT message_ = 0;
 };
 
-std::wstring foreground_executable_path(HWND window);
+std::wstring foreground_executable_path(HWND window, DWORD* error = nullptr);
+
+struct RunningApplication {
+    std::wstring executable_path;
+    std::wstring window_title;
+    DWORD process_id = 0;
+    DWORD error = ERROR_SUCCESS;
+};
+
+// One entry per executable with an open or minimized desktop window.
+std::vector<RunningApplication> running_applications(DWORD excluded_process_id = GetCurrentProcessId());
 
 }  // namespace gamma_changer

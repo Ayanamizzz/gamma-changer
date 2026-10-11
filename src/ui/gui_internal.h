@@ -28,10 +28,12 @@
 #include <algorithm>
 #include <cmath>
 #include <cwchar>
+#include <filesystem>
 #include <iterator>
 #include <limits>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace gamma_changer {
@@ -118,6 +120,10 @@ struct AutomaticDisplayProfile {
 };
 
 struct GuiState {
+    GuiState() = default;
+    GuiState(std::filesystem::path data_root, DisplayRampBackend& backend)
+        : ramp_backend(backend), store(std::move(data_root)) {}
+
     HWND window = nullptr;
     HWND title = nullptr;
     HWND subtitle = nullptr;
@@ -197,8 +203,9 @@ struct GuiState {
     int profile_scroll_offset = 0;
     std::size_t renaming_preset = kNoProfile;
     CalibrationSession session;
+    DisplayRampBackend& ramp_backend = system_display_ramp_backend();
     ProfileStore store;
-    CalibrationController controller{store};
+    CalibrationController controller{store, ramp_backend};
     ProfileManager profile_manager{store};
     bool reapply_after_display_refresh = false;
     int recovery_retry_attempt = 0;
@@ -207,6 +214,9 @@ struct GuiState {
     AppProfileConfig app_profile_config;
     ForegroundAppWatcher foreground_watcher;
     bool foreground_watcher_running = false;
+    bool foreground_reapply_requested = false;
+    bool foreground_evaluation_pending = false;
+    DWORD foreground_lookup_error = ERROR_SUCCESS;
     bool auto_switch_paused = false;
     bool app_rules_dialog_open = false;
     std::wstring foreground_application;
@@ -272,8 +282,9 @@ void run_recovery_retry(GuiState& gui);
 bool flush_before_exit(GuiState& gui);
 bool confirm_close_after_save_failure(GuiState& gui);
 void initialize_automatic_profiles(GuiState& gui);
-void schedule_automatic_profiles(GuiState& gui);
+void schedule_automatic_profiles(GuiState& gui, bool force = false);
 void evaluate_automatic_profiles(GuiState& gui, bool force = false);
+void apply_application_profiles(GuiState& gui, const std::wstring& path, bool force = false);
 bool restore_automatic_profiles(GuiState& gui);
 bool pause_automatic_profiles(GuiState& gui);
 void toggle_automatic_profiles(GuiState& gui);

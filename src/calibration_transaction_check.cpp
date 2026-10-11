@@ -147,7 +147,7 @@ int wmain() {
         ProfileStore runtime_store(temporary.path / L"runtime");
         FakeRampBackend runtime_backend;
         CalibrationController runtime_controller(runtime_store, runtime_backend);
-        const GammaRamp original = runtime_backend.current;
+        const GammaRamp runtime_original = runtime_backend.current;
         std::wstring error;
         ok &= expect(runtime_controller.apply_runtime(display, settings, error),
                      L"automatic switching must apply runtime settings");
@@ -157,11 +157,11 @@ int wmain() {
                      L"automatic switching must not create saved display settings");
         GammaRamp captured{};
         ok &= expect(runtime_store.load_base_ramp(display.stable_id, captured) &&
-                         captured.channel == original.channel,
+                         captured.channel == runtime_original.channel,
                      L"first automatic switch must capture the original ramp");
 
-        const CalibrationSettings baseline{1.10, 0.05, 1.0, 1.0, 1.0, 1.0};
-        ok &= expect(runtime_store.save_params(display.stable_id, baseline, error),
+        const CalibrationSettings desktop_settings{1.10, 0.05, 1.0, 1.0, 1.0, 1.0};
+        ok &= expect(runtime_store.save_params(display.stable_id, desktop_settings, error),
                      L"runtime fixture must save desktop settings");
         ok &= expect(runtime_store.save_profile_preferences(
                          {{display.stable_id, L"desktop-profile"}}, error),
@@ -170,7 +170,7 @@ int wmain() {
                      L"a later automatic switch must succeed");
         CalibrationSettings saved{};
         ok &= expect(runtime_store.try_load_params(display.stable_id, saved) &&
-                         settings_equal(saved, baseline),
+                         settings_equal(saved, desktop_settings),
                      L"automatic switching must preserve saved desktop settings");
         const auto preferences = runtime_store.load_profile_preferences();
         ok &= expect(preferences.size() == 1 &&
@@ -192,13 +192,13 @@ int wmain() {
 
         runtime_backend.fail_write_number = runtime_backend.write_count + 1;
         error.clear();
-        ok &= expect(!runtime_controller.apply_runtime(display, baseline, error) &&
+        ok &= expect(!runtime_controller.apply_runtime(display, desktop_settings, error) &&
                          !error.empty(),
                      L"a failed runtime ramp write must report an error");
         ok &= expect(runtime_backend.current.channel == build_ramp(settings).channel,
                      L"a failed runtime switch must preserve the current ramp");
         ok &= expect(runtime_store.try_load_params(display.stable_id, saved) &&
-                         settings_equal(saved, baseline),
+                         settings_equal(saved, desktop_settings),
                      L"a failed runtime switch must preserve saved desktop settings");
     }
 

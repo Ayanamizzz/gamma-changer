@@ -4,7 +4,7 @@ Gamma Changer is a native Windows desktop utility for adjusting the software gam
 each connected display. It provides a modern, high-DPI Win32 interface with per-monitor
 settings, a scrollable profile list, direct numeric input, and a live tone-response preview.
 
-Current version: **2.6.0**
+Current release version: **2.6.1**
 
 ## Features
 
@@ -86,17 +86,32 @@ return the selected display to a neutral LUT.
 ### Application profiles
 
 Select a display and profile, then click **Bind app...** (or right-click a profile and choose
-**Bind application...**) to select an `.exe`. Binding an application enables **Auto-switch**.
+**Bind application...**) to choose a running application. Binding an application enables **Auto-switch**.
+The chosen filter becomes that application's default for the selected display, including when
+rebinding an application that already has filters. Rebinding the same app/display/filter reuses
+its existing rule. For example, bind a browser to a Common filter and a game to a Gaming filter;
+switching browser → game → browser applies Common → Gaming → Common.
 When that executable becomes the foreground application, its profile applies to the bound
 display. Switching to another application restores that display's desktop settings.
+When a custom default for unassigned applications is configured, it applies instead.
 The effect covers the whole display, including other visible windows.
 
 Use **App rules...** to open the application configuration interface. Select any application
 on the left to see only its filters on the right. **Add app...** accepts any executable;
-**Add filter...** creates another named filter for that application. There are no built-in
+**Add filter...** creates another named filter for that application. **Add app...** opens a list
+of applications with open or minimized desktop windows, showing their executable name,
+window title, and full path. Multiple windows of the same executable appear once; copies in
+different directories remain separate. The last active application is preselected when available.
+Double-click a row or click **Select** to continue to its filter settings. **Refresh** updates
+the snapshot while preserving selection when the application remains open. **Browse...** still
+adds an executable that is not currently listed. Unreadable executable paths show their Windows
+error code and cannot be selected directly. There are no built-in
 application categories or predefined filter lists.
 
-Choose **Use for app** to select the filter that applies when that application is active.
+Choose **Set as default** to select an existing filter for the application. Adding or editing
+an enabled filter also selects it as the default when the configuration dialog is saved,
+and resumes automatic switching after manual adjustments. Changes stay in the dialog's draft
+until **Save**; **Cancel** preserves the previous assignments and switching preference.
 The selected filter is enabled and placed ahead of the application's other filters for the
 same display. Each display can have its own selected filter. You can rename, edit, reorder,
 disable, or remove filters without replacing the application's other filters.
@@ -110,6 +125,36 @@ Paths are matched in full, so two applications with the same filename in differe
 can use different profiles.
 Profiles can be renamed without losing their bindings. Deleting a profile removes its bindings.
 
+For games started by a launcher, open **App rules... > Add app...** and choose the running
+game using its title and full path. **Add active app...** remains a shortcut for the last
+active executable. **Active app** in the filter editor
+can also replace a binding with the last observed executable. Review the path before saving.
+An identification failure shows its Windows error code; an unbound application is shown as
+having no assigned filter. Application matching uses the executable, independently of tab
+titles or document names. Existing 2.6.0 rules load without changing their assignments.
+
+### Default for unassigned applications
+
+In **App rules...**, choose a display under **Unassigned applications** and set its
+**Default filter**. **Desktop settings (default)** restores that display's existing desktop
+calibration. Alternatively, choose any saved filter, such as Common, to use for all applications
+without an enabled, available binding on that display. Specific application bindings take
+priority, so a game's Gaming filter overrides the Common fallback.
+
+Click **Save** to persist the selection and resume automatic switching. **Cancel** discards
+changes. Each display has its own fallback; unconfigured displays keep their desktop settings.
+Turning off automatic switching or exiting restores desktop settings. Deleting the chosen
+profile resets its fallback to desktop settings. Editing an app filter shared with a fallback
+creates a separate copy so the default remains unchanged.
+
+Custom fallbacks use version 3 of `app_rules.v1`; configurations without custom fallbacks
+continue to save in version 2. Fallbacks and application bindings are saved together atomically.
+
+Focus changes reapply the matching filter even when its parameters have not changed, since
+the application may have changed the display ramp. Notifications are coalesced over 150 ms
+without repeatedly restarting the deadline. Automatic switching preserves desktop settings
+and restores them when the active application has neither a binding nor a custom default.
+
 Opening the editor restores desktop settings and pauses switching while you edit. Pending
 adjustments save before automatic switching resumes when you return to another application.
 Manually selecting a profile or restoring defaults pauses automatic switching; click
@@ -120,6 +165,14 @@ profiles or per-display default settings.
 At launch, the display with the largest current resolution (`width × height`) is selected.
 Equal resolutions prefer the Windows primary display. Refreshing keeps your current display
 selected while it remains connected.
+
+### Planned sidebar redesign
+
+The [sidebar interaction proposal](docs/design/sidebar-interaction-proposal.md) describes
+a future neutral-gray interface, a single application-settings entry, and recognition
+assistance that waits for the user to apply a suggested filter. These are design proposals,
+not features implemented in 2.6.1. This release retains the existing automatic-switching
+controls and manual pause behavior.
 
 ## Local data
 

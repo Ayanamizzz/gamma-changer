@@ -21,7 +21,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
 
     switch (message) {
     case kForegroundProfileMessage:
-        if (gui) schedule_automatic_profiles(*gui);
+        if (gui) schedule_automatic_profiles(*gui, wparam != 0);
         return 0;
     case WM_ACTIVATEAPP:
         if (gui) {
@@ -365,7 +365,10 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
     case WM_TIMER:
         if (wparam == kForegroundProfileTimer && gui) {
             KillTimer(window, kForegroundProfileTimer);
-            evaluate_automatic_profiles(*gui);
+            gui->foreground_evaluation_pending = false;
+            const bool force = gui->foreground_reapply_requested;
+            gui->foreground_reapply_requested = false;
+            evaluate_automatic_profiles(*gui, force);
         } else if (wparam == kPreviewTimer && gui) {
             KillTimer(window, kPreviewTimer);
             if (gui->live_preview) preview_selected(*gui);
