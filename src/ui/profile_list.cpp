@@ -247,19 +247,14 @@ void select_preset(GuiState& gui, std::size_t index) {
     std::wstring error;
     if (!display || !gui.controller.apply_and_save(*display, next_params, error)) {
         gui.active_preset = gui.session.undo_preset;
-        gui.session.profile_switch_undo_available = false;
-        gui.session.undo_display_id.clear();
+        gui.session.clear_undo();
         set_params_to_controls(gui, gui.session.undo_params);
         refresh_preset_buttons(gui);
         set_status(gui, display ? L"Profile switch failed: " + error : L"No display selected",
                    StatusTone::error);
         return;
     }
-    gui.session.committed_settings = next_params;
-    gui.session.dirty = false;
-    SetWindowTextW(gui.apply_button, L"Saved");
-    EnableWindow(gui.apply_button, FALSE);
-    EnableWindow(gui.before_after_button, FALSE);
+    mark_committed(gui, next_params);
     refresh_preset_buttons(gui);
     remember_active_profile_for_display(gui, *display);
     set_status(gui, gui.profiles[index].name + L" applied  |  Ctrl+Z to go back",
@@ -279,22 +274,19 @@ void undo_profile_switch(GuiState& gui) {
         return;
     }
     if (gui.session.undo_display_id != display_storage_id(*display)) {
-        gui.session.profile_switch_undo_available = false;
-        gui.session.undo_display_id.clear();
+        gui.session.clear_undo();
         set_status(gui, L"That undo action belongs to a different display",
                    StatusTone::warning);
         return;
     }
     if (gui.session.undo_preset >= gui.profiles.size()) {
-        gui.session.profile_switch_undo_available = false;
-        gui.session.undo_display_id.clear();
+        gui.session.clear_undo();
         return;
     }
     const std::size_t preset = gui.session.undo_preset;
     const GammaParams params = gui.session.undo_params;
     const Profile previous_profile = gui.session.undo_profile;
-    gui.session.profile_switch_undo_available = false;
-    gui.session.undo_display_id.clear();
+    gui.session.clear_undo();
     gui.active_preset = preset;
     const Profile current_profile = gui.profiles[preset];
     gui.profiles[preset] = previous_profile;
@@ -320,11 +312,7 @@ void undo_profile_switch(GuiState& gui) {
         refresh_preset_buttons(gui);
         return;
     }
-    gui.session.committed_settings = params;
-    gui.session.dirty = false;
-    SetWindowTextW(gui.apply_button, L"Saved");
-    EnableWindow(gui.apply_button, FALSE);
-    EnableWindow(gui.before_after_button, FALSE);
+    mark_committed(gui, params);
     refresh_preset_buttons(gui);
     if (const auto* active_display = selected_display(gui)) {
         remember_active_profile_for_display(gui, *active_display);

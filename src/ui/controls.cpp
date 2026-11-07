@@ -25,8 +25,34 @@ LRESULT CALLBACK compare_proc(HWND button, UINT message, WPARAM wparam, LPARAM l
 }
 
 
-void set_slider(HWND slider, int value) {
-    SendMessageW(slider, TBM_SETPOS, TRUE, value);
+AdjustmentBindings adjustment_bindings(const GuiState& gui) {
+    return {{
+        {gui.gamma_value, gui.gamma_slider, calibration_ranges::gamma, &CalibrationSettings::gamma},
+        {gui.brightness_value, gui.brightness_slider, calibration_ranges::brightness,
+         &CalibrationSettings::brightness},
+        {gui.contrast_value, gui.contrast_slider, calibration_ranges::contrast,
+         &CalibrationSettings::contrast},
+        {gui.r_gain_value, gui.r_gain_slider, calibration_ranges::gain, &CalibrationSettings::r_gain},
+        {gui.g_gain_value, gui.g_gain_slider, calibration_ranges::gain, &CalibrationSettings::g_gain},
+        {gui.b_gain_value, gui.b_gain_slider, calibration_ranges::gain, &CalibrationSettings::b_gain},
+    }};
+}
+
+const AdjustmentBinding* find_adjustment(const AdjustmentBindings& bindings, HWND edit) {
+    for (const auto& binding : bindings) {
+        if (binding.edit == edit) return &binding;
+    }
+    return nullptr;
+}
+
+namespace {
+
+void set_slider(HWND slider, double value) {
+    SendMessageW(slider, TBM_SETPOS, TRUE, setting_to_steps(value));
+}
+
+double slider_setting(HWND slider) {
+    return steps_to_setting(static_cast<int>(SendMessageW(slider, TBM_GETPOS, 0, 0)));
 }
 
 void set_edit(HWND edit, double value) {
@@ -40,65 +66,46 @@ bool read_edit(HWND edit, double& value) {
     GetWindowTextW(edit, text, static_cast<int>(std::size(text)));
     wchar_t* end = nullptr;
     const double parsed = wcstod(text, &end);
-    if (end == text || *end != L'\0') return false;
+    if (end == text || *end != L'\0' || !std::isfinite(parsed)) return false;
     value = parsed;
     return true;
 }
 
-int slider_value(HWND slider) {
-    return static_cast<int>(SendMessageW(slider, TBM_GETPOS, 0, 0));
-}
+}  // namespace
 
 GammaParams params_from_sliders(const GuiState& gui) {
     GammaParams params;
-    params.gamma = slider_value(gui.gamma_slider) / 100.0;
-    params.brightness = slider_value(gui.brightness_slider) / 100.0;
-    params.contrast = slider_value(gui.contrast_slider) / 100.0;
-    params.r_gain = slider_value(gui.r_gain_slider) / 100.0;
-    params.g_gain = slider_value(gui.g_gain_slider) / 100.0;
-    params.b_gain = slider_value(gui.b_gain_slider) / 100.0;
+    for (const auto& binding : adjustment_bindings(gui)) {
+        params.*binding.field = slider_setting(binding.slider);
+    }
     return params;
 }
 
-
-void edit_changed(GuiState& gui, HWND edit, HWND slider, double minimum, double maximum) {
+void edit_changed(GuiState& gui, const AdjustmentBinding& binding) {
     double value = 0.0;
-    if (!read_edit(edit, value) || !std::isfinite(value)) return;
-    value = std::clamp(value, minimum, maximum);
+    if (!read_edit(binding.edit, value)) return;
+    value = std::clamp(value, binding.range.minimum, binding.range.maximum);
     gui.syncing_controls = true;
-    set_slider(slider, static_cast<int>(value * 100.0));
+    set_slider(binding.slider, value);
     gui.syncing_controls = false;
     mark_changed(gui);
 }
 
-void normalize_edit(GuiState& gui, HWND edit, HWND slider, double minimum, double maximum) {
+void normalize_edit(GuiState& gui, const AdjustmentBinding& binding) {
     double value = 0.0;
-    if (!read_edit(edit, value) || !std::isfinite(value)) {
-        gui.syncing_controls = true;
-        set_edit(edit, slider_value(slider) / 100.0);
-        gui.syncing_controls = false;
-        return;
-    }
-    value = std::clamp(value, minimum, maximum);
     gui.syncing_controls = true;
-    set_slider(slider, static_cast<int>(value * 100.0));
-    set_edit(edit, value);
+    if (!read_edit(binding.edit, value)) {
+        set_edit(binding.edit, slider_setting(binding.slider));
+    } else {
+        value = std::clamp(value, binding.range.minimum, binding.range.maximum);
+        set_slider(binding.slider, value);
+        set_edit(binding.edit, value);
+    }
     gui.syncing_controls = false;
 }
 
 void normalize_all_edits(GuiState& gui) {
-    normalize_edit(gui, gui.gamma_value, gui.gamma_slider,
-                   calibration_ranges::gamma.minimum, calibration_ranges::gamma.maximum);
-    normalize_edit(gui, gui.brightness_value, gui.brightness_slider,
-                   calibration_ranges::brightness.minimum, calibration_ranges::brightness.maximum);
-    normalize_edit(gui, gui.contrast_value, gui.contrast_slider,
-                   calibration_ranges::contrast.minimum, calibration_ranges::contrast.maximum);
-    normalize_edit(gui, gui.r_gain_value, gui.r_gain_slider,
-                   calibration_ranges::gain.minimum, calibration_ranges::gain.maximum);
-    normalize_edit(gui, gui.g_gain_value, gui.g_gain_slider,
-                   calibration_ranges::gain.minimum, calibration_ranges::gain.maximum);
-    normalize_edit(gui, gui.b_gain_value, gui.b_gain_slider,
-                   calibration_ranges::gain.minimum, calibration_ranges::gain.maximum);
+    for (const auto& binding : adjustment_bindings(gui)) normalize_edit(gui, binding);
     mark_changed(gui);
 }
 
@@ -126,31 +133,14 @@ LRESULT CALLBACK numeric_edit_proc(HWND edit, UINT message, WPARAM wparam, LPARA
     if (message == WM_SETFOCUS || message == WM_KILLFOCUS) {
         if (gui) invalidate_control_background(*gui, edit);
     }
-    if (message == WM_KEYDOWN && (wparam == VK_UP || wparam == VK_DOWN)) {
-        double minimum = calibration_ranges::gain.minimum;
-        double maximum = calibration_ranges::gain.maximum;
-        double fallback = calibration_ranges::gain.default_value;
-        switch (GetDlgCtrlID(edit)) {
-        case kGammaValue:
-            minimum = calibration_ranges::gamma.minimum;
-            maximum = calibration_ranges::gamma.maximum;
-            fallback = calibration_ranges::gamma.default_value;
-            break;
-        case kBrightnessValue:
-            minimum = calibration_ranges::brightness.minimum;
-            maximum = calibration_ranges::brightness.maximum;
-            fallback = calibration_ranges::brightness.default_value;
-            break;
-        case kContrastValue:
-            minimum = calibration_ranges::contrast.minimum;
-            maximum = calibration_ranges::contrast.maximum;
-            fallback = calibration_ranges::contrast.default_value;
-            break;
-        default: break;
-        }
+    const AdjustmentBindings bindings =
+        gui ? adjustment_bindings(*gui) : AdjustmentBindings{};
+    const AdjustmentBinding* binding = gui ? find_adjustment(bindings, edit) : nullptr;
+    if (message == WM_KEYDOWN && (wparam == VK_UP || wparam == VK_DOWN) && binding) {
         double value = 0.0;
-        if (!read_edit(edit, value) || !std::isfinite(value)) value = fallback;
-        value = std::clamp(value + (wparam == VK_UP ? 0.01 : -0.01), minimum, maximum);
+        if (!read_edit(edit, value)) value = binding->range.default_value;
+        value = std::clamp(value + (wparam == VK_UP ? 0.01 : -0.01), binding->range.minimum,
+                           binding->range.maximum);
         set_edit(edit, value);
         SendMessageW(edit, EM_SETSEL, 0, -1);
         return 0;
@@ -162,47 +152,21 @@ LRESULT CALLBACK numeric_edit_proc(HWND edit, UINT message, WPARAM wparam, LPARA
                      reinterpret_cast<LPARAM>(GetDlgItem(parent, kApplyButton)));
         return 0;
     }
-    if (message == WM_KEYDOWN && wparam == VK_ESCAPE && gui) {
+    if (message == WM_KEYDOWN && wparam == VK_ESCAPE && binding) {
         gui->syncing_controls = true;
-        set_edit(edit, slider_value(edit == gui->gamma_value ? gui->gamma_slider :
-                                    edit == gui->brightness_value ? gui->brightness_slider :
-                                    edit == gui->contrast_value ? gui->contrast_slider :
-                                    edit == gui->r_gain_value ? gui->r_gain_slider :
-                                    edit == gui->g_gain_value ? gui->g_gain_slider :
-                                                                gui->b_gain_slider) / 100.0);
+        set_edit(edit, slider_setting(binding->slider));
         gui->syncing_controls = false;
         SendMessageW(edit, EM_SETSEL, 0, -1);
         return 0;
     }
-    if (message == WM_LBUTTONDBLCLK && gui) {
-        HWND slider = nullptr;
-        double value = 1.0;
-        switch (GetDlgCtrlID(edit)) {
-        case kGammaValue:
-            slider = gui->gamma_slider;
-            value = calibration_ranges::gamma.default_value;
-            break;
-        case kBrightnessValue:
-            slider = gui->brightness_slider;
-            value = calibration_ranges::brightness.default_value;
-            break;
-        case kContrastValue:
-            slider = gui->contrast_slider;
-            value = calibration_ranges::contrast.default_value;
-            break;
-        case kRGainValue: slider = gui->r_gain_slider; break;
-        case kGGainValue: slider = gui->g_gain_slider; break;
-        case kBGainValue: slider = gui->b_gain_slider; break;
-        default: break;
-        }
-        if (slider) {
-            gui->syncing_controls = true;
-            set_slider(slider, static_cast<int>(value * 100.0));
-            set_edit(edit, value);
-            gui->syncing_controls = false;
-            mark_changed(*gui);
-            return 0;
-        }
+    if (message == WM_LBUTTONDBLCLK && binding) {
+        const double value = binding->range.default_value;
+        gui->syncing_controls = true;
+        set_slider(binding->slider, value);
+        set_edit(edit, value);
+        gui->syncing_controls = false;
+        mark_changed(*gui);
+        return 0;
     }
     if (message == WM_NCDESTROY) RemoveWindowSubclass(edit, numeric_edit_proc, 1);
     return DefSubclassProc(edit, message, wparam, lparam);
@@ -285,12 +249,9 @@ LRESULT CALLBACK slider_proc(HWND slider, UINT message, WPARAM wparam, LPARAM lp
 
 void update_value_labels(GuiState& gui) {
     gui.syncing_controls = true;
-    set_edit(gui.gamma_value, slider_value(gui.gamma_slider) / 100.0);
-    set_edit(gui.brightness_value, slider_value(gui.brightness_slider) / 100.0);
-    set_edit(gui.contrast_value, slider_value(gui.contrast_slider) / 100.0);
-    set_edit(gui.r_gain_value, slider_value(gui.r_gain_slider) / 100.0);
-    set_edit(gui.g_gain_value, slider_value(gui.g_gain_slider) / 100.0);
-    set_edit(gui.b_gain_value, slider_value(gui.b_gain_slider) / 100.0);
+    for (const auto& binding : adjustment_bindings(gui)) {
+        set_edit(binding.edit, slider_setting(binding.slider));
+    }
     gui.syncing_controls = false;
 }
 
@@ -312,12 +273,9 @@ void set_adjustment_enabled(GuiState& gui, bool enabled) {
 
 void set_params_to_controls(GuiState& gui, const GammaParams& params) {
     gui.syncing_controls = true;
-    set_slider(gui.gamma_slider, static_cast<int>(params.gamma * 100.0));
-    set_slider(gui.brightness_slider, static_cast<int>(params.brightness * 100.0));
-    set_slider(gui.contrast_slider, static_cast<int>(params.contrast * 100.0));
-    set_slider(gui.r_gain_slider, static_cast<int>(params.r_gain * 100.0));
-    set_slider(gui.g_gain_slider, static_cast<int>(params.g_gain * 100.0));
-    set_slider(gui.b_gain_slider, static_cast<int>(params.b_gain * 100.0));
+    for (const auto& binding : adjustment_bindings(gui)) {
+        set_slider(binding.slider, params.*binding.field);
+    }
     gui.syncing_controls = false;
     update_value_labels(gui);
     invalidate_preview_curve(gui);
@@ -459,24 +417,12 @@ void create_controls(GuiState& gui) {
     gui.b_gain_slider = make_slider(kBGainSlider);
     gui.b_gain_value = make_value(kBGainValue);
 
-    SendMessageW(gui.gamma_slider, TBM_SETRANGE, TRUE,
-                 MAKELONG(static_cast<int>(calibration_ranges::gamma.minimum * 100),
-                          static_cast<int>(calibration_ranges::gamma.maximum * 100)));
-    SendMessageW(gui.brightness_slider, TBM_SETRANGE, TRUE,
-                 MAKELONG(static_cast<int>(calibration_ranges::brightness.minimum * 100),
-                          static_cast<int>(calibration_ranges::brightness.maximum * 100)));
-    SendMessageW(gui.contrast_slider, TBM_SETRANGE, TRUE,
-                 MAKELONG(static_cast<int>(calibration_ranges::contrast.minimum * 100),
-                          static_cast<int>(calibration_ranges::contrast.maximum * 100)));
-    SendMessageW(gui.r_gain_slider, TBM_SETRANGE, TRUE,
-                 MAKELONG(static_cast<int>(calibration_ranges::gain.minimum * 100),
-                          static_cast<int>(calibration_ranges::gain.maximum * 100)));
-    SendMessageW(gui.g_gain_slider, TBM_SETRANGE, TRUE,
-                 MAKELONG(static_cast<int>(calibration_ranges::gain.minimum * 100),
-                          static_cast<int>(calibration_ranges::gain.maximum * 100)));
-    SendMessageW(gui.b_gain_slider, TBM_SETRANGE, TRUE,
-                 MAKELONG(static_cast<int>(calibration_ranges::gain.minimum * 100),
-                          static_cast<int>(calibration_ranges::gain.maximum * 100)));
+    for (const auto& binding : adjustment_bindings(gui)) {
+        SendMessageW(binding.slider, TBM_SETRANGEMIN, FALSE,
+                     setting_to_steps(binding.range.minimum));
+        SendMessageW(binding.slider, TBM_SETRANGEMAX, TRUE,
+                     setting_to_steps(binding.range.maximum));
+    }
 
     if (FAILED(SetWindowTheme(gui.display_combo, L"Explorer", nullptr))) {
         log_message(LogLevel::warning, L"Could not apply the Explorer theme to the display list");

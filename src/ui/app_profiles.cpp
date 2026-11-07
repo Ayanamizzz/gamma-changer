@@ -220,10 +220,6 @@ std::wstring rule_name(const std::vector<Profile>& profiles, const AppProfileRul
     return profile ? profile->name : L"Removed profile";
 }
 
-std::wstring rule_name(const GuiState& gui, const AppProfileRule& rule) {
-    return rule_name(gui.profiles, rule);
-}
-
 std::wstring rule_display_name(const GuiState& gui, const std::wstring& id) {
     for (std::size_t index = 0; index < gui.displays.size(); ++index) {
         if (display_storage_id(gui.displays[index]) == id) {
@@ -833,19 +829,17 @@ void update_automatic_profile_controls(GuiState& gui) {
     } else if (gui.foreground_lookup_error != ERROR_SUCCESS) {
         text = L"App identification failed (error " + std::to_wstring(gui.foreground_lookup_error) + L")";
     } else {
-        const auto active = display
-            ? gui.automatic_display_profiles.find(display_storage_id(*display))
-            : gui.automatic_display_profiles.end();
-        const auto* profile = active == gui.automatic_display_profiles.end()
-            ? nullptr : profile_by_id(gui, active->second.profile_id);
-        const auto* rule = active == gui.automatic_display_profiles.end() ? nullptr
-            : find_app_profile_rule_by_id(gui.app_profile_config, active->second.rule_id);
+        const RuntimeDisplayState* active =
+            display ? gui.app_runtime.active(display_storage_id(*display)) : nullptr;
+        const auto* profile = active ? profile_by_id(gui, active->profile_id) : nullptr;
+        const auto* rule =
+            active ? find_app_profile_rule_by_id(gui.app_profile_config, active->rule_id) : nullptr;
         const std::wstring name = rule && !rule->name.empty() ? rule->name
             : profile ? profile->name : L"";
         text = profile ? executable_name(gui.foreground_application) + L" \u2192 " + name
                        : gui.foreground_application.empty() ? L"Desktop settings"
                        : executable_name(gui.foreground_application) + L": no assigned filter";
-        if (profile && active->second.rule_id.empty()) text += L" (default)";
+        if (profile && active->rule_id.empty()) text += L" (default)";
     }
     SetWindowTextW(gui.auto_switch_status, text.c_str());
     invalidate_control_background(gui, gui.auto_switch_status);
@@ -867,32 +861,13 @@ void schedule_automatic_profiles(GuiState& gui, bool force) {
 }
 
 bool restore_automatic_profiles(GuiState& gui) {
-    bool success = true;
-    bool restored = false;
-    for (auto active = gui.automatic_display_profiles.begin();
-         active != gui.automatic_display_profiles.end();) {
-        const auto display = std::find_if(gui.displays.begin(), gui.displays.end(),
-                                          [&](const DisplayInfo& item) {
-            return display_storage_id(item) == active->first;
-        });
-        if (display == gui.displays.end()) {
-            ++active;
-            continue;
-        }
-        std::wstring error;
-        if (!gui.ramp_backend.write(*display, active->second.desktop_ramp, error)) {
-            set_status(gui, L"Could not restore desktop settings: " + error, StatusTone::error);
-            success = false;
-            ++active;
-        } else {
-            active = gui.automatic_display_profiles.erase(active);
-            restored = true;
-        }
-    }
-    if (success && restored) {
+    const RuntimeRestoreResult result = gui.app_runtime.restore_all(gui.displays);
+    if (!result.success) {
+        set_status(gui, L"Could not restore desktop settings: " + result.error, StatusTone::error);
+    } else if (result.restored_any) {
         set_status(gui, L"Desktop settings restored", StatusTone::success);
     }
-    return success;
+    return result.success;
 }
 
 void evaluate_automatic_profiles(GuiState& gui, bool force) {
@@ -935,54 +910,30 @@ void evaluate_automatic_profiles(GuiState& gui, bool force) {
 
 void apply_application_profiles(GuiState& gui, const std::wstring& path, bool force) {
     gui.foreground_application = path;
-    for (const auto& display : gui.displays) {
-        const std::wstring id = display_storage_id(display);
-        const auto* rule = find_app_profile_rule(gui.app_profile_config, path, id);
-        const auto* profile = rule ? profile_by_id(gui, rule->profile_id) : nullptr;
-        const bool fallback = !profile || !profile->saved;
-        if (fallback && gui.app_profile_config.enabled) {
-            const auto* preference = find_app_fallback_profile(gui.app_profile_config, id);
-            profile = preference ? profile_by_id(gui, preference->profile_id) : nullptr;
+    const auto events = gui.app_runtime.apply(gui.app_profile_config, gui.profiles,
+                                              gui.displays, path, force);
+    for (const RuntimeEvent& event : events) {
+        switch (event.kind) {
+        case RuntimeEventKind::applied:
+            set_status(gui, L"Auto: " + executable_name(path) + L" \u2192 " + event.label,
+                       StatusTone::success);
+            break;
+        case RuntimeEventKind::restored:
+            set_status(gui, L"Desktop settings restored", StatusTone::success);
+            break;
+        case RuntimeEventKind::restore_failed:
+            set_status(gui, L"Could not restore desktop settings: " + event.error,
+                       StatusTone::error);
+            break;
+        case RuntimeEventKind::capture_failed:
+            set_status(gui, L"Could not read desktop settings: " + event.error,
+                       StatusTone::error);
+            break;
+        case RuntimeEventKind::apply_failed:
+            set_status(gui, L"Automatic profile switch failed: " + event.error,
+                       StatusTone::error);
+            break;
         }
-        auto active = gui.automatic_display_profiles.find(id);
-        std::wstring error;
-        if (!profile || !profile->saved) {
-            if (active != gui.automatic_display_profiles.end() &&
-                gui.ramp_backend.write(display, active->second.desktop_ramp, error)) {
-                gui.automatic_display_profiles.erase(active);
-                set_status(gui, L"Desktop settings restored", StatusTone::success);
-            } else if (!error.empty()) {
-                set_status(gui, L"Could not restore desktop settings: " + error,
-                           StatusTone::error);
-            }
-            continue;
-        }
-        if (!force && active != gui.automatic_display_profiles.end() &&
-            active->second.profile_id == profile->id &&
-            settings_equal(active->second.settings, profile->settings)) {
-            active->second.rule_id = fallback ? L"" : rule->id;
-            continue;
-        }
-        AutomaticDisplayProfile next;
-        if (active == gui.automatic_display_profiles.end()) {
-            if (!gui.ramp_backend.read(display, next.desktop_ramp, error)) {
-                set_status(gui, L"Could not read desktop settings: " + error, StatusTone::error);
-                continue;
-            }
-        } else {
-            next = active->second;
-        }
-        if (!gui.controller.apply_runtime(display, profile->settings, error)) {
-            set_status(gui, L"Automatic profile switch failed: " + error, StatusTone::error);
-            continue;
-        }
-        next.profile_id = profile->id;
-        next.rule_id = fallback ? L"" : rule->id;
-        next.settings = profile->settings;
-        gui.automatic_display_profiles[id] = std::move(next);
-        const std::wstring name = fallback ? L"Default: " + profile->name : rule_name(gui, *rule);
-        set_status(gui, L"Auto: " + executable_name(path) + L" \u2192 " + name,
-                   StatusTone::success);
     }
     update_automatic_profile_controls(gui);
 }

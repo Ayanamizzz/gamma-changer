@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -24,6 +25,16 @@ inline constexpr CalibrationRange contrast{0.10, 3.00, 1.00};
 inline constexpr CalibrationRange gain{0.01, 2.00, 1.00};
 
 }  // namespace calibration_ranges
+
+// Every adjustment is edited in 0.01 steps (slider positions are integers).
+// Round, never truncate: 1.15 * 100 is 114.999... in binary floating point, and
+// truncation would silently turn a saved 1.15 into 1.14 on the next save.
+inline int setting_to_steps(double value) {
+    return static_cast<int>(std::lround(value * 100.0));
+}
+inline double steps_to_setting(int steps) {
+    return static_cast<double>(steps) / 100.0;
+}
 
 struct CalibrationSettings {
     double gamma = 1.0;

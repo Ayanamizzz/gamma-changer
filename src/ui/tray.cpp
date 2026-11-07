@@ -59,11 +59,8 @@ bool apply_profile_from_tray(GuiState& gui, std::size_t index) {
         return false;
     }
     gui.active_preset = index;
-    gui.session.committed_settings = gui.profiles[index].settings;
-    set_params_to_controls(gui, gui.session.committed_settings);
-    gui.session.dirty = false;
-    EnableWindow(gui.apply_button, FALSE);
-    EnableWindow(gui.before_after_button, FALSE);
+    set_params_to_controls(gui, gui.profiles[index].settings);
+    mark_committed(gui, gui.profiles[index].settings);
     refresh_preset_buttons(gui);
     remember_active_profile_for_display(gui, *display);
     set_status(gui, gui.profiles[index].name + L" applied", StatusTone::success);

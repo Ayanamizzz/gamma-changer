@@ -2,6 +2,7 @@
 
 #include "app_version.h"
 #include "app_profile_rules.h"
+#include "app_profile_runtime.h"
 #include "foreground_app_watcher.h"
 #include "calibration_controller.h"
 #include "calibration_session.h"
@@ -26,6 +27,7 @@
 #include <uxtheme.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cwchar>
 #include <filesystem>
@@ -39,7 +41,6 @@
 namespace gamma_changer {
 
 constexpr wchar_t kWindowClass[] = L"GammaChangerCppWindow";
-constexpr wchar_t kBuiltinProfileId[] = L"builtin-default";
 constexpr std::size_t kNoProfile = std::numeric_limits<std::size_t>::max();
 constexpr int kProfileVisibleRows = 4;
 constexpr int kProfileIdBase = 1000;
@@ -110,13 +111,6 @@ enum class StatusTone {
     success,
     warning,
     error,
-};
-
-struct AutomaticDisplayProfile {
-    GammaRamp desktop_ramp{};
-    std::wstring rule_id;
-    std::wstring profile_id;
-    CalibrationSettings settings{};
 };
 
 struct GuiState {
@@ -220,10 +214,24 @@ struct GuiState {
     bool auto_switch_paused = false;
     bool app_rules_dialog_open = false;
     std::wstring foreground_application;
-    std::unordered_map<std::wstring, AutomaticDisplayProfile> automatic_display_profiles;
+    AppProfileRuntime app_runtime{controller};
 };
 
+// One row of the adjustment panel: an edit box mirroring a slider, its valid
+// range, and the CalibrationSettings field it edits. All per-adjustment UI code
+// iterates this table instead of repeating six hand-written cases.
+struct AdjustmentBinding {
+    HWND edit;
+    HWND slider;
+    CalibrationRange range;
+    double CalibrationSettings::*field;
+};
+using AdjustmentBindings = std::array<AdjustmentBinding, 6>;
+AdjustmentBindings adjustment_bindings(const GuiState& gui);
+const AdjustmentBinding* find_adjustment(const AdjustmentBindings& bindings, HWND edit);
+
 // Shared internal functions used across the UI translation units.
+LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam);
 GuiState* state(HWND window);
 GammaParams params_from_sliders(const GuiState& gui);
 void set_status(GuiState& gui, const std::wstring& text, StatusTone tone);
@@ -232,6 +240,10 @@ const DisplayInfo* selected_display(const GuiState& gui);
 void set_params_to_controls(GuiState& gui, const GammaParams& params);
 void refresh_preset_buttons(GuiState& gui);
 bool save_and_apply_current(GuiState& gui, bool automatic);
+// The single place that turns "this is what the display now shows and what is
+// persisted" into session state and the save/compare button state.
+void mark_committed(GuiState& gui, const CalibrationSettings& settings);
+void show_save_failed(GuiState& gui, const std::wstring& error);
 
 void add_tray_icon(HWND window);
 void remove_tray_icon(HWND window);
@@ -261,8 +273,8 @@ void create_controls(GuiState& gui);
 void normalize_all_edits(GuiState& gui);
 void update_value_labels(GuiState& gui);
 void set_adjustment_enabled(GuiState& gui, bool enabled);
-void edit_changed(GuiState& gui, HWND edit, HWND slider, double minimum, double maximum);
-void normalize_edit(GuiState& gui, HWND edit, HWND slider, double minimum, double maximum);
+void edit_changed(GuiState& gui, const AdjustmentBinding& binding);
+void normalize_edit(GuiState& gui, const AdjustmentBinding& binding);
 void preview_selected(GuiState& gui);
 void mark_changed(GuiState& gui);
 void enable_modern_backdrop(HWND window);

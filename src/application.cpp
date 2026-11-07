@@ -61,6 +61,21 @@ void mark_changed(GuiState& gui) {
     else KillTimer(gui.window, kPreviewTimer);
 }
 
+void mark_committed(GuiState& gui, const CalibrationSettings& settings) {
+    gui.session.committed_settings = settings;
+    gui.session.mark_clean();
+    KillTimer(gui.window, kAutoSaveTimer);
+    SetWindowTextW(gui.apply_button, L"Saved");
+    EnableWindow(gui.apply_button, FALSE);
+    EnableWindow(gui.before_after_button, FALSE);
+}
+
+void show_save_failed(GuiState& gui, const std::wstring& error) {
+    set_status(gui, error, StatusTone::error);
+    SetWindowTextW(gui.apply_button, L"Retry save");
+    EnableWindow(gui.apply_button, TRUE);
+}
+
 void enable_modern_backdrop(HWND window) {
     constexpr DWORD kWindowCornerPreference = 33;
     constexpr DWORD kSystemBackdropType = 38;
@@ -140,18 +155,11 @@ bool save_and_apply_current(GuiState& gui, bool automatic) {
         const CalibrationSettings settings = params_from_sliders(gui);
         const CommitResult commit = gui.controller.commit(*display, settings);
         if (!commit.succeeded()) {
-            set_status(gui, commit.error, StatusTone::error);
-            SetWindowTextW(gui.apply_button, L"Retry save");
-            EnableWindow(gui.apply_button, TRUE);
+            show_save_failed(gui, commit.error);
             return false;
         }
-        gui.session.committed_settings = settings;
+        mark_committed(gui, settings);
         gui.session.profile_switch_undo_available = false;
-        gui.session.dirty = false;
-        KillTimer(gui.window, kAutoSaveTimer);
-        EnableWindow(gui.before_after_button, FALSE);
-        SetWindowTextW(gui.apply_button, L"Saved");
-        EnableWindow(gui.apply_button, FALSE);
         set_status(gui, L"Calibration saved (profiles are read-only)",
                    StatusTone::success);
         return true;
@@ -176,9 +184,7 @@ bool save_and_apply_current(GuiState& gui, bool automatic) {
     if (!commit.succeeded()) {
         profile = previous;
         refresh_preset_buttons(gui);
-        set_status(gui, commit.error, StatusTone::error);
-        SetWindowTextW(gui.apply_button, L"Retry save");
-        EnableWindow(gui.apply_button, TRUE);
+        show_save_failed(gui, commit.error);
         return false;
     }
     if (!persist_presets(gui)) {
@@ -193,14 +199,9 @@ bool save_and_apply_current(GuiState& gui, bool automatic) {
         EnableWindow(gui.apply_button, TRUE);
         return false;
     }
-    gui.session.committed_settings = profile.settings;
+    mark_committed(gui, profile.settings);
     gui.session.profile_switch_undo_available = false;
-    gui.session.dirty = false;
-    KillTimer(gui.window, kAutoSaveTimer);
-    EnableWindow(gui.before_after_button, FALSE);
     refresh_preset_buttons(gui);
-    SetWindowTextW(gui.apply_button, L"Saved");
-    EnableWindow(gui.apply_button, FALSE);
     set_status(gui, automatic ? L"Saved automatically" : L"Saved", StatusTone::success);
     return true;
 }
@@ -220,10 +221,7 @@ bool preserve_pending_adjustment(GuiState& gui) {
             return false;
         }
         gui.pending_adjustments[display_storage_id(*display)] = settings;
-        gui.session.committed_settings = settings;
-        gui.session.dirty = false;
-        SetWindowTextW(gui.apply_button, L"Saved");
-        EnableWindow(gui.apply_button, FALSE);
+        mark_committed(gui, settings);
         log_message(LogLevel::info, L"Pending calibration preserved for " +
                                     display_storage_id(*display));
         return true;
@@ -249,10 +247,7 @@ bool preserve_pending_adjustment(GuiState& gui) {
         return false;
     }
     gui.pending_adjustments[display_storage_id(*display)] = settings;
-    gui.session.committed_settings = settings;
-    gui.session.dirty = false;
-    SetWindowTextW(gui.apply_button, L"Saved");
-    EnableWindow(gui.apply_button, FALSE);
+    mark_committed(gui, settings);
     log_message(LogLevel::info, L"Pending calibration preserved for " +
                                 display_storage_id(*display));
     return true;
@@ -386,14 +381,8 @@ bool apply_preferred_profile_to_display(GuiState& gui, const DisplayInfo& displa
         return false;
     }
 
-    gui.session.committed_settings = profile_params;
-    gui.session.dirty = false;
-    gui.session.profile_switch_undo_available = false;
-    gui.session.undo_display_id.clear();
-    KillTimer(gui.window, kAutoSaveTimer);
-    SetWindowTextW(gui.apply_button, L"Saved");
-    EnableWindow(gui.apply_button, FALSE);
-    EnableWindow(gui.before_after_button, FALSE);
+    mark_committed(gui, profile_params);
+    gui.session.clear_undo();
     refresh_preset_buttons(gui);
     return true;
 }
@@ -405,17 +394,12 @@ bool load_selected_profile(GuiState& gui) {
     if (gui.active_display_index != index) {
         // Undo snapshots are display-scoped: switching displays invalidates them
         // so Ctrl+Z can never apply one display's adjustments to another.
-        gui.session.profile_switch_undo_available = false;
-        gui.session.undo_display_id.clear();
+        gui.session.clear_undo();
     }
     gui.active_display_index = index;
-    gui.session.committed_settings = gui.controller.load_settings(gui.displays[index]);
-    set_params_to_controls(gui, gui.session.committed_settings);
-    gui.session.dirty = false;
-    KillTimer(gui.window, kAutoSaveTimer);
-    SetWindowTextW(gui.apply_button, L"Saved");
-    EnableWindow(gui.apply_button, FALSE);
-    EnableWindow(gui.before_after_button, FALSE);
+    const CalibrationSettings saved = gui.controller.load_settings(gui.displays[index]);
+    set_params_to_controls(gui, saved);
+    mark_committed(gui, saved);
     // Apply the remembered profile only for a real display switch. Refreshing
     // the same display keeps the current calibration intact.
     if (previous_display_index != index) {
@@ -472,9 +456,7 @@ void reset_selected(GuiState& gui) {
     const GammaParams previous_params = params_from_sliders(gui);
     if (settings_equal(previous_params, default_params()) &&
         settings_equal(gui.session.committed_settings, default_params())) {
-        gui.session.dirty = false;
-        SetWindowTextW(gui.apply_button, L"Saved");
-        EnableWindow(gui.apply_button, FALSE);
+        mark_committed(gui, default_params());
         set_status(gui, L"Default settings are already active", StatusTone::idle);
         return;
     }
@@ -484,25 +466,24 @@ void reset_selected(GuiState& gui) {
     std::wstring error;
     if (!gui.controller.apply_and_save(*display, default_params(), error)) {
         set_params_to_controls(gui, previous_params);
-        gui.session.dirty = !settings_equal(previous_params, gui.session.committed_settings);
-        SetWindowTextW(gui.apply_button, gui.session.dirty ? L"Retry save" : L"Saved");
-        EnableWindow(gui.apply_button, gui.session.dirty ? TRUE : FALSE);
-        set_status(gui, error, StatusTone::error);
+        if (settings_equal(previous_params, gui.session.committed_settings)) {
+            mark_committed(gui, gui.session.committed_settings);
+            set_status(gui, error, StatusTone::error);
+        } else {
+            gui.session.dirty = true;
+            show_save_failed(gui, error);
+        }
         return;
     }
 
     // Restoring defaults changes only the selected display and its persisted
     // per-display settings; the selected profile definition stays untouched.
-    gui.session.committed_settings = default_params();
-    gui.session.dirty = false;
+    mark_committed(gui, default_params());
     gui.session.profile_switch_undo_available = true;
     gui.session.undo_display_id = display_storage_id(*display);
     gui.session.undo_preset = gui.active_preset;
     gui.session.undo_params = previous_params;
     gui.session.undo_profile = gui.profiles[gui.active_preset];
-    SetWindowTextW(gui.apply_button, L"Saved");
-    EnableWindow(gui.apply_button, FALSE);
-    EnableWindow(gui.before_after_button, FALSE);
     set_status(gui, L"Default settings restored  |  Ctrl+Z to undo",
                StatusTone::success);
 }
@@ -554,8 +535,7 @@ void refresh_displays(GuiState& gui) {
         select_display_item(gui, selected);
         if (!previous_storage_id.empty() &&
             previous_storage_id != display_storage_id(gui.displays[selected])) {
-            gui.session.profile_switch_undo_available = false;
-            gui.session.undo_display_id.clear();
+            gui.session.clear_undo();
         }
         // Enumeration indexes can change when another screen disconnects. Only
         // a different physical display should apply a new preferred profile.

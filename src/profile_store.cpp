@@ -1,5 +1,6 @@
 #include "profile_store.h"
 
+#include "file_io.h"
 #include "gamma_lut.h"
 
 #include <windows.h>
@@ -16,134 +17,10 @@
 namespace gamma_changer {
 namespace {
 
-bool replace_file(const std::filesystem::path& temporary,
-                  const std::filesystem::path& target,
-                  std::wstring& error) {
-    HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
-                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE || !FlushFileBuffers(file)) {
-        const DWORD code = GetLastError();
-        if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
-        error = L"cannot flush configuration file (Win32 error " +
-                std::to_wstring(code) + L")";
-        std::error_code ignored;
-        std::filesystem::remove(temporary, ignored);
-        return false;
-    }
-    CloseHandle(file);
-    if (MoveFileExW(temporary.c_str(), target.c_str(),
-                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        return true;
-    }
-    error = L"cannot replace configuration file (Win32 error " +
-            std::to_wstring(GetLastError()) + L")";
-    std::error_code ignored;
-    std::filesystem::remove(temporary, ignored);
-    return false;
-}
-
-// Configuration files are UTF-8 on disk. std::wifstream/std::wofstream depend
-// on the process locale, so Chinese profile names fail to save under the
-// default "C" locale; convert explicitly with the Win32 UTF-8 codec instead.
-std::string to_utf8(const std::wstring& value) {
-    if (value.empty()) return std::string{};
-    const int bytes = WideCharToMultiByte(CP_UTF8, 0, value.data(),
-                                          static_cast<int>(value.size()),
-                                          nullptr, 0, nullptr, nullptr);
-    if (bytes <= 0) return std::string{};
-    std::string result(static_cast<std::size_t>(bytes), '\0');
-    if (WideCharToMultiByte(CP_UTF8, 0, value.data(),
-                            static_cast<int>(value.size()), result.data(), bytes,
-                            nullptr, nullptr) != bytes) {
-        return std::string{};
-    }
-    return result;
-}
-
-std::wstring from_utf8(const std::string& value) {
-    if (value.empty()) return std::wstring{};
-    const int chars = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-                                          value.data(),
-                                          static_cast<int>(value.size()),
-                                          nullptr, 0);
-    if (chars <= 0) return std::wstring{};
-    std::wstring result(static_cast<std::size_t>(chars), L'\0');
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
-                            static_cast<int>(value.size()), result.data(),
-                            chars) != chars) {
-        return std::wstring{};
-    }
-    return result;
-}
-
-bool read_utf8_text_file(const std::filesystem::path& path, std::wstring& text) {
-    std::ifstream input(path, std::ios::binary);
-    if (!input) return false;
-    const std::string bytes((std::istreambuf_iterator<char>(input)),
-                            std::istreambuf_iterator<char>());
-    if (input.bad()) return false;
-    if (bytes.empty()) {
-        text.clear();
-        return true;
-    }
-    text = from_utf8(bytes);
-    return !text.empty();
-}
-
-bool write_utf8_text_file(const std::filesystem::path& path,
-                          const std::wstring& text, std::wstring& error,
-                          const wchar_t* description) {
-    const std::string bytes = to_utf8(text);
-    if (!text.empty() && bytes.empty()) {
-        error = L"cannot encode " + std::wstring(description) + L" as UTF-8";
-        return false;
-    }
-    std::ofstream output(path, std::ios::binary | std::ios::trunc);
-    if (!output) {
-        error = L"cannot write " + std::wstring(description) + L" file";
-        return false;
-    }
-    if (!bytes.empty()) {
-        output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-    }
-    output.close();
-    if (!output) {
-        error = L"failed while writing " + std::wstring(description) + L" file";
-        return false;
-    }
-    return true;
-}
-
-HANDLE store_write_mutex() {
-    static HANDLE mutex = CreateMutexW(nullptr, FALSE,
-                                       L"Local\\GammaChangerCpp.StoreWrites.v1");
-    return mutex;
-}
-
-class StoreWriteLock {
-public:
-    StoreWriteLock() : mutex_(store_write_mutex()) {
-        if (mutex_ != nullptr) {
-            const DWORD wait = WaitForSingleObject(mutex_, INFINITE);
-            locked_ = wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED;
-        }
-    }
-    ~StoreWriteLock() {
-        if (mutex_ != nullptr && locked_) ReleaseMutex(mutex_);
-    }
-    StoreWriteLock(const StoreWriteLock&) = delete;
-    StoreWriteLock& operator=(const StoreWriteLock&) = delete;
-
-private:
-    HANDLE mutex_ = nullptr;
-    bool locked_ = false;
-};
-
-bool file_exceeds(const std::filesystem::path& path, std::uintmax_t limit) {
-    std::error_code ec;
-    const std::uintmax_t size = std::filesystem::file_size(path, ec);
-    return !ec && size > limit;
-}
+using file_io::file_exceeds;
+using file_io::from_utf8;
+using file_io::to_utf8;
+using file_io::read_utf8_text;
 
 constexpr std::uintmax_t kParamsFileLimit = 64 * 1024;
 constexpr std::uintmax_t kPresetsFileLimit = 64 * 1024;
@@ -274,10 +151,10 @@ bool ProfileStore::try_load_params(const std::wstring& display_id, GammaParams& 
     const auto primary = params_path(display_id);
     if (file_exceeds(primary, kParamsFileLimit)) return false;
     std::wstring file_text;
-    if (!read_utf8_text_file(primary, file_text)) {
+    if (!read_utf8_text(primary, file_text)) {
         const auto legacy = root_ / (legacy_hashed_filename(display_id) + L".profile");
         if (legacy == primary) return false;
-        if (!read_utf8_text_file(legacy, file_text)) return false;
+        if (!read_utf8_text(legacy, file_text)) return false;
     }
 
     std::wistringstream input(file_text);
@@ -325,9 +202,6 @@ bool ProfileStore::save_params(const std::wstring& display_id, const GammaParams
         return false;
     }
 
-    StoreWriteLock lock;
-    const auto target = params_path(display_id);
-    const auto temporary = target.wstring() + L".tmp";
     std::wostringstream content;
     content << std::setprecision(17)
             << L"gamma " << params.gamma << L'\n'
@@ -336,19 +210,15 @@ bool ProfileStore::save_params(const std::wstring& display_id, const GammaParams
             << L"r_gain " << params.r_gain << L'\n'
             << L"g_gain " << params.g_gain << L'\n'
             << L"b_gain " << params.b_gain << L'\n';
-    if (!write_utf8_text_file(temporary, content.str(), error, L"profile")) {
-        std::error_code ignored;
-        std::filesystem::remove(temporary, ignored);
-        return false;
-    }
-    return replace_file(temporary, target, error);
+    return file_io::write_utf8_atomically(params_path(display_id), content.str(), L"profile",
+                                          error);
 }
 
 std::array<PresetSlot, kPresetCount> ProfileStore::load_presets() const {
     std::array<PresetSlot, kPresetCount> presets{};
     if (file_exceeds(presets_path(root_), kPresetsFileLimit)) return presets;
     std::wstring file_text;
-    if (!read_utf8_text_file(presets_path(root_), file_text)) return presets;
+    if (!read_utf8_text(presets_path(root_), file_text)) return presets;
     std::wistringstream input(file_text);
 
     std::array<bool, kPresetCount> seen{};
@@ -399,9 +269,6 @@ bool ProfileStore::save_presets(const std::array<PresetSlot, kPresetCount>& pres
             return false;
         }
     }
-    StoreWriteLock lock;
-    const auto target = presets_path(root_);
-    const auto temporary = target.wstring() + L".tmp";
     std::wostringstream content;
     content << std::setprecision(17);
     for (std::size_t i = 0; i < kPresetCount; ++i) {
@@ -413,12 +280,7 @@ bool ProfileStore::save_presets(const std::array<PresetSlot, kPresetCount>& pres
                 << params.gamma << L' ' << params.brightness << L' ' << params.contrast << L' '
                 << params.r_gain << L' ' << params.g_gain << L' ' << params.b_gain << L'\n';
     }
-    if (!write_utf8_text_file(temporary, content.str(), error, L"presets")) {
-        std::error_code ignored;
-        std::filesystem::remove(temporary, ignored);
-        return false;
-    }
-    return replace_file(temporary, target, error);
+    return file_io::write_utf8_atomically(presets_path(root_), content.str(), L"presets", error);
 }
 
 ProfileLoadStatus ProfileStore::load_profiles(std::vector<Profile>& profiles) const {
@@ -426,14 +288,14 @@ ProfileLoadStatus ProfileStore::load_profiles(std::vector<Profile>& profiles) co
     if (file_exceeds(profiles_path(), kProfilesFileLimit)) {
         return ProfileLoadStatus::corrupt;
     }
-    std::ifstream byte_input(profiles_path(), std::ios::binary);
-    if (!byte_input) return ProfileLoadStatus::missing;
-    const std::string bytes((std::istreambuf_iterator<char>(byte_input)),
-                            std::istreambuf_iterator<char>());
-    const std::wstring file_text = from_utf8(bytes);
-    if (byte_input.bad() || (!bytes.empty() && file_text.empty())) {
-        return ProfileLoadStatus::corrupt;
+    std::error_code exists_error;
+    if (!std::filesystem::exists(profiles_path(), exists_error)) {
+        return exists_error ? ProfileLoadStatus::corrupt : ProfileLoadStatus::missing;
     }
+    std::string bytes;
+    if (!file_io::read_bytes(profiles_path(), bytes)) return ProfileLoadStatus::corrupt;
+    const std::wstring file_text = from_utf8(bytes);
+    if (!bytes.empty() && file_text.empty()) return ProfileLoadStatus::corrupt;
     std::wistringstream input(file_text);
 
     std::wstring header;
@@ -507,9 +369,6 @@ bool ProfileStore::save_profiles(const std::vector<Profile>& profiles,
             return false;
         }
     }
-    StoreWriteLock lock;
-    const auto target = profiles_path();
-    const auto temporary = target.wstring() + L".tmp";
     std::wostringstream content;
     content << L"GammaChangerProfiles 1\n" << std::setprecision(17);
     for (const auto& profile : profiles) {
@@ -521,13 +380,7 @@ bool ProfileStore::save_profiles(const std::vector<Profile>& profiles,
                 << profile.settings.contrast << L' ' << profile.settings.r_gain << L' '
                 << profile.settings.g_gain << L' ' << profile.settings.b_gain << L'\n';
     }
-    if (!write_utf8_text_file(temporary, content.str(), error, L"profiles")) {
-        std::error_code ignored;
-        std::filesystem::remove(temporary, ignored);
-        return false;
-    }
-
-    return replace_file(temporary, target, error);
+    return file_io::write_utf8_atomically(profiles_path(), content.str(), L"profiles", error);
 }
 
 std::vector<DisplayProfilePreference> ProfileStore::load_profile_preferences() const {
@@ -536,7 +389,7 @@ std::vector<DisplayProfilePreference> ProfileStore::load_profile_preferences() c
         return preferences;
     }
     std::wstring file_text;
-    if (!read_utf8_text_file(profile_preferences_path(), file_text)) return preferences;
+    if (!read_utf8_text(profile_preferences_path(), file_text)) return preferences;
 
     std::wistringstream input(file_text);
     std::wstring header;
@@ -592,28 +445,21 @@ bool ProfileStore::save_profile_preferences(
         }
     }
 
-    StoreWriteLock lock;
-    const auto target = profile_preferences_path();
-    const auto temporary = target.wstring() + L".tmp";
     std::wostringstream content;
     content << L"GammaChangerProfilePreferences 1\n";
     for (const auto& preference : preferences) {
         content << std::quoted(preference.display_id) << L' '
                 << std::quoted(preference.profile_id) << L'\n';
     }
-    if (!write_utf8_text_file(temporary, content.str(), error, L"profile preferences")) {
-        std::error_code ignored;
-        std::filesystem::remove(temporary, ignored);
-        return false;
-    }
-    return replace_file(temporary, target, error);
+    return file_io::write_utf8_atomically(profile_preferences_path(), content.str(),
+                                          L"profile preferences", error);
 }
 
 AppProfileConfig ProfileStore::load_app_profile_config() const {
     AppProfileConfig config;
     if (file_exceeds(app_profile_rules_path(), kAppProfileRulesFileLimit)) return config;
     std::wstring file_text;
-    if (!read_utf8_text_file(app_profile_rules_path(), file_text)) return config;
+    if (!read_utf8_text(app_profile_rules_path(), file_text)) return config;
 
     std::wistringstream input(file_text);
     std::wstring header;
@@ -711,15 +557,8 @@ bool ProfileStore::save_app_profile_config(const AppProfileConfig& config,
         return false;
     }
 
-    StoreWriteLock lock;
-    const auto target = app_profile_rules_path();
-    const auto temporary = target.wstring() + L".tmp";
-    if (!write_utf8_text_file(temporary, file_text, error, L"application profile rules")) {
-        std::error_code ignored;
-        std::filesystem::remove(temporary, ignored);
-        return false;
-    }
-    return replace_file(temporary, target, error);
+    return file_io::write_utf8_atomically(app_profile_rules_path(), file_text,
+                                          L"application profile rules", error);
 }
 
 bool ProfileStore::load_base_ramp(const std::wstring& display_id, GammaRamp& ramp) const {
@@ -739,23 +578,9 @@ bool ProfileStore::load_base_ramp(const std::wstring& display_id, GammaRamp& ram
 
 bool ProfileStore::save_base_ramp(const std::wstring& display_id, const GammaRamp& ramp,
                                   std::wstring& error) const {
-    StoreWriteLock lock;
-    const auto target = ramp_path(display_id);
-    const auto temporary = target.wstring() + L".tmp";
-    std::ofstream output(std::filesystem::path(temporary), std::ios::binary | std::ios::trunc);
-    if (!output) {
-        error = L"cannot write base ramp file";
-        return false;
-    }
-    output.write(reinterpret_cast<const char*>(ramp.channel[0].data()), sizeof(ramp.channel));
-    output.close();
-    if (!output) {
-        error = L"failed while writing base ramp file";
-        std::error_code ignored;
-        std::filesystem::remove(temporary, ignored);
-        return false;
-    }
-    return replace_file(temporary, target, error);
+    const std::string bytes(reinterpret_cast<const char*>(ramp.channel[0].data()),
+                            sizeof(ramp.channel));
+    return file_io::write_atomically(ramp_path(display_id), bytes, L"base ramp", error);
 }
 
 }  // namespace gamma_changer

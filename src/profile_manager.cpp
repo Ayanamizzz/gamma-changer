@@ -6,15 +6,10 @@
 #include <utility>
 
 namespace gamma_changer {
-namespace {
 
-constexpr wchar_t kDefaultProfileId[] = L"builtin-default";
-
-Profile default_profile() {
-    return {kDefaultProfileId, L"Default", default_params(), true};
+Profile builtin_default_profile() {
+    return {kBuiltinProfileId, L"Default", default_params(), true};
 }
-
-}  // namespace
 
 ProfileManager::ProfileManager(ProfileStore& store) : store_(store) {}
 
@@ -36,7 +31,7 @@ const Profile* ProfileManager::find_profile(const std::wstring& id) const {
 
 void ProfileManager::migrate_legacy_slots() {
     profiles_.clear();
-    profiles_.push_back(default_profile());
+    profiles_.push_back(builtin_default_profile());
 
     const auto slots = store_.load_presets();
     for (std::size_t index = 0; index < kPresetCount; ++index) {
@@ -67,8 +62,8 @@ bool ProfileManager::load(std::wstring& error) {
         return false;
     }
 
-    if (!find_profile(kDefaultProfileId)) {
-        profiles_.insert(profiles_.begin(), default_profile());
+    if (!find_profile(kBuiltinProfileId)) {
+        profiles_.insert(profiles_.begin(), builtin_default_profile());
     }
     for (std::size_t index = 0; index < kPresetCount; ++index) {
         if (find_profile(legacy_id(index))) continue;
@@ -77,6 +72,16 @@ bool ProfileManager::load(std::wstring& error) {
                              default_params(), false});
     }
     return true;
+}
+
+std::vector<Profile> ProfileManager::read_only_legacy_profiles() const {
+    std::vector<Profile> profiles{builtin_default_profile()};
+    const auto slots = store_.load_presets();
+    for (std::size_t index = 0; index < kPresetCount; ++index) {
+        if (!slots[index].occupied) continue;
+        profiles.push_back({legacy_id(index), slots[index].name, slots[index].params, true});
+    }
+    return profiles;
 }
 
 std::array<PresetSlot, kPresetCount> ProfileManager::legacy_slots() const {

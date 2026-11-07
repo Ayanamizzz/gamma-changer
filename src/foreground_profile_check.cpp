@@ -5,9 +5,6 @@
 #include <filesystem>
 #include <iostream>
 
-namespace gamma_changer {
-LRESULT CALLBACK window_proc(HWND, UINT, WPARAM, LPARAM);
-}
 using namespace gamma_changer;
 
 namespace {
@@ -77,7 +74,7 @@ bool check_application_switching(const std::filesystem::path& root) {
     apply_application_profiles(gui, browser, true);
     ok &= backend.current.channel == build_ramp(common).channel && backend.writes == before_duplicate + 1;
     apply_application_profiles(gui, L"C:\\Apps\\Unbound.exe", true);
-    ok &= backend.current.channel == build_ramp(desktop).channel && gui.automatic_display_profiles.empty();
+    ok &= backend.current.channel == build_ramp(desktop).channel && gui.app_runtime.empty();
 
     set_app_fallback_profile(gui.app_profile_config, display.stable_id, L"common");
     if (!gui.store.save_app_profile_config(gui.app_profile_config, error)) return false;
@@ -86,14 +83,15 @@ bool check_application_switching(const std::filesystem::path& root) {
     ok &= backend.current.channel == build_ramp(gaming).channel;
     apply_application_profiles(gui, L"C:\\Apps\\UnboundBrowser.exe", true);
     ok &= backend.current.channel == build_ramp(common).channel &&
-          gui.automatic_display_profiles.at(display.stable_id).rule_id.empty();
+          gui.app_runtime.active(display.stable_id) &&
+          gui.app_runtime.active(display.stable_id)->rule_id.empty();
     apply_application_profiles(gui, L"C:\\Apps\\UnboundEditor.exe", true);
     ok &= backend.current.channel == build_ramp(common).channel;
     apply_application_profiles(gui, L"", true);
     ok &= backend.current.channel == build_ramp(common).channel;
     gui.app_profile_config.enabled = false;
     apply_application_profiles(gui, L"C:\\Apps\\Unbound.exe", true);
-    ok &= backend.current.channel == build_ramp(desktop).channel && gui.automatic_display_profiles.empty();
+    ok &= backend.current.channel == build_ramp(desktop).channel && gui.app_runtime.empty();
     gui.app_profile_config.enabled = true;
     set_app_fallback_profile(gui.app_profile_config, display.stable_id, L"");
     apply_application_profiles(gui, game, true);

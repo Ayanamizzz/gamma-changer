@@ -1,7 +1,5 @@
 #include "gui_internal.h"
 
-using namespace gamma_changer;
-
 namespace gamma_changer {
 
 LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -101,16 +99,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             current->profile_store_available = false;
             // Keep the legacy presets usable read-only instead of showing an
             // empty profile list when only profiles.v1 is damaged.
-            current->profiles.clear();
-            current->profiles.push_back(
-                {kBuiltinProfileId, L"Default", default_params(), true});
-            const auto legacy_slots = current->store.load_presets();
-            for (std::size_t i = 0; i < kPresetCount; ++i) {
-                if (!legacy_slots[i].occupied) continue;
-                current->profiles.push_back(
-                    {L"legacy-slot-" + std::to_wstring(i + 1), legacy_slots[i].name,
-                     legacy_slots[i].params, true});
-            }
+            current->profiles = current->profile_manager.read_only_legacy_profiles();
             set_status(*current, L"Profile file is damaged; legacy profiles are read-only: " +
                                        profile_error,
                        StatusTone::error);
@@ -242,12 +231,10 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             } else {
                 SetTextColor(dc, ui::Theme::text);
             }
-            const bool trackbar = control == gui->gamma_slider ||
-                                  control == gui->brightness_slider ||
-                                  control == gui->contrast_slider ||
-                                  control == gui->r_gain_slider ||
-                                  control == gui->g_gain_slider ||
-                                  control == gui->b_gain_slider;
+            const AdjustmentBindings bindings = adjustment_bindings(*gui);
+            const bool trackbar = std::any_of(
+                bindings.begin(), bindings.end(),
+                [control](const AdjustmentBinding& binding) { return binding.slider == control; });
             // Native trackbars require an opaque erase brush; text labels inherit
             // the already-composited parent layer without rectangular islands.
             return reinterpret_cast<LRESULT>(trackbar ? gui->background_brush
@@ -264,26 +251,14 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         break;
     case WM_COMMAND:
         if (!gui) break;
-        if (!gui->syncing_controls && HIWORD(wparam) == EN_CHANGE) {
-            switch (LOWORD(wparam)) {
-            case kGammaValue: edit_changed(*gui, gui->gamma_value, gui->gamma_slider, calibration_ranges::gamma.minimum, calibration_ranges::gamma.maximum); return 0;
-            case kBrightnessValue: edit_changed(*gui, gui->brightness_value, gui->brightness_slider, calibration_ranges::brightness.minimum, calibration_ranges::brightness.maximum); return 0;
-            case kContrastValue: edit_changed(*gui, gui->contrast_value, gui->contrast_slider, calibration_ranges::contrast.minimum, calibration_ranges::contrast.maximum); return 0;
-            case kRGainValue: edit_changed(*gui, gui->r_gain_value, gui->r_gain_slider, calibration_ranges::gain.minimum, calibration_ranges::gain.maximum); return 0;
-            case kGGainValue: edit_changed(*gui, gui->g_gain_value, gui->g_gain_slider, calibration_ranges::gain.minimum, calibration_ranges::gain.maximum); return 0;
-            case kBGainValue: edit_changed(*gui, gui->b_gain_value, gui->b_gain_slider, calibration_ranges::gain.minimum, calibration_ranges::gain.maximum); return 0;
-            default: break;
-            }
-        }
-        if (!gui->syncing_controls && HIWORD(wparam) == EN_KILLFOCUS) {
-            switch (LOWORD(wparam)) {
-            case kGammaValue: normalize_edit(*gui, gui->gamma_value, gui->gamma_slider, calibration_ranges::gamma.minimum, calibration_ranges::gamma.maximum); return 0;
-            case kBrightnessValue: normalize_edit(*gui, gui->brightness_value, gui->brightness_slider, calibration_ranges::brightness.minimum, calibration_ranges::brightness.maximum); return 0;
-            case kContrastValue: normalize_edit(*gui, gui->contrast_value, gui->contrast_slider, calibration_ranges::contrast.minimum, calibration_ranges::contrast.maximum); return 0;
-            case kRGainValue: normalize_edit(*gui, gui->r_gain_value, gui->r_gain_slider, calibration_ranges::gain.minimum, calibration_ranges::gain.maximum); return 0;
-            case kGGainValue: normalize_edit(*gui, gui->g_gain_value, gui->g_gain_slider, calibration_ranges::gain.minimum, calibration_ranges::gain.maximum); return 0;
-            case kBGainValue: normalize_edit(*gui, gui->b_gain_value, gui->b_gain_slider, calibration_ranges::gain.minimum, calibration_ranges::gain.maximum); return 0;
-            default: break;
+        if (!gui->syncing_controls &&
+            (HIWORD(wparam) == EN_CHANGE || HIWORD(wparam) == EN_KILLFOCUS)) {
+            const AdjustmentBindings bindings = adjustment_bindings(*gui);
+            if (const auto* binding =
+                    find_adjustment(bindings, reinterpret_cast<HWND>(lparam))) {
+                if (HIWORD(wparam) == EN_CHANGE) edit_changed(*gui, *binding);
+                else normalize_edit(*gui, *binding);
+                return 0;
             }
         }
         if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) >= kProfileIdBase &&
@@ -496,88 +471,3 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
     return DefWindowProcW(window, message, wparam, lparam);
 }
 }  // namespace gamma_changer
-
-int WINAPI wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE,
-                    _In_ PWSTR command_line, _In_ int show_command) {
-    const bool startup_launch = command_line && wcsstr(command_line, L"--startup") != nullptr;
-    SingleInstanceLock instance_lock;
-    if (!instance_lock.is_primary()) {
-        if (!startup_launch) activate_existing_window(kWindowClass);
-        return 0;
-    }
-
-    // Prevent Windows from bitmap-scaling the whole window on 125%/150% displays.
-    // Per-monitor v2 keeps text and common controls rendered at native resolution.
-    if (!SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) {
-        SetProcessDPIAware();
-    }
-
-    const HRESULT com_result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-
-    WNDCLASSEXW window_class{sizeof(window_class)};
-    window_class.hInstance = instance;
-    window_class.lpfnWndProc = window_proc;
-    window_class.lpszClassName = kWindowClass;
-    window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    window_class.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_MAIN_ICON));
-    window_class.hIconSm = LoadIconW(instance, MAKEINTRESOURCEW(IDI_MAIN_ICON));
-    if (!RegisterClassExW(&window_class)) {
-        log_message(LogLevel::error, L"Could not register the main window class (Win32 error " +
-                                         std::to_wstring(GetLastError()) + L")");
-    }
-
-    GuiState gui;
-    gui.startup_launch = startup_launch;
-    const UINT initial_dpi = GetDpiForSystem();
-    const int initial_width = MulDiv(1120, static_cast<int>(initial_dpi), 96);
-    const int initial_height = MulDiv(800, static_cast<int>(initial_dpi), 96);
-    HWND window = CreateWindowExW(0, kWindowClass, kApplicationTitle,
-                                  WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX |
-                                      WS_THICKFRAME | WS_MAXIMIZEBOX,
-                                  CW_USEDEFAULT, CW_USEDEFAULT, initial_width, initial_height,
-                                  nullptr, nullptr, instance, &gui);
-    if (!window) {
-        if (SUCCEEDED(com_result)) CoUninitialize();
-        return 1;
-    }
-
-    if (gui.startup_launch) {
-        ShowWindow(window, SW_HIDE);
-    } else {
-        ShowWindow(window, show_command == 0 ? SW_SHOWNORMAL : show_command);
-        UpdateWindow(window);
-    }
-
-    MSG message{};
-    while (GetMessageW(&message, nullptr, 0, 0) > 0) {
-        const bool undo_shortcut = message.message == WM_KEYDOWN &&
-                                   message.wParam == L'Z' &&
-                                   (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-        const HWND focus = GetFocus();
-        const bool editing_text = focus == gui.profile_rename || focus == gui.gamma_value ||
-                                  focus == gui.brightness_value || focus == gui.contrast_value ||
-                                  focus == gui.r_gain_value || focus == gui.g_gain_value ||
-                                  focus == gui.b_gain_value;
-        const bool rename_commit_key =
-            message.message == WM_KEYDOWN &&
-            (message.wParam == VK_RETURN || message.wParam == VK_ESCAPE) &&
-            focus == gui.profile_rename && gui.renaming_preset != kNoProfile;
-        if (rename_commit_key) {
-            // Handle these keys before IsDialogMessage so dialog-manager
-            // navigation can never swallow Enter/Escape while renaming.
-            SendMessageW(window, kProfileCommitRenameMessage,
-                         message.wParam == VK_RETURN ? TRUE : FALSE, 0);
-            continue;
-        }
-        if (undo_shortcut && !editing_text) {
-            SendMessageW(window, kUndoProfileSwitchMessage, 0, 0);
-            continue;
-        }
-        if (!IsDialogMessageW(window, &message)) {
-            TranslateMessage(&message);
-            DispatchMessageW(&message);
-        }
-    }
-    if (SUCCEEDED(com_result)) CoUninitialize();
-    return static_cast<int>(message.wParam);
-}

@@ -8,6 +8,10 @@
 
 namespace gamma_changer {
 
+// The undeletable, unrenamable profile every collection starts with.
+inline constexpr wchar_t kBuiltinProfileId[] = L"builtin-default";
+Profile builtin_default_profile();
+
 // Owns the user-facing profile collection and provides a compatibility bridge
 // for the original four preset slots during the incremental UI migration.
 class ProfileManager {
@@ -16,6 +20,11 @@ public:
 
     bool load(std::wstring& error);
     const std::vector<Profile>& profiles() const { return profiles_; }
+
+    // When profiles.v1 is damaged it must never be overwritten, but the user
+    // should still see something sensible: the built-in default plus any saved
+    // legacy preset slots, for read-only display.
+    std::vector<Profile> read_only_legacy_profiles() const;
 
     std::array<PresetSlot, kPresetCount> legacy_slots() const;
     bool update_legacy_slots(const std::array<PresetSlot, kPresetCount>& slots,

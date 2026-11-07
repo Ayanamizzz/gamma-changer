@@ -45,7 +45,7 @@
       "displayName": "Release - All checks",
       "configurePreset": "vs2022-x64",
       "configuration": "Release",
-      "targets": ["core_safety_check", "profile_migration_check", "calibration_transaction_check", "app_profile_rules_check", "foreground_profile_check"]
+      "targets": ["core_safety_check", "profile_migration_check", "calibration_transaction_check", "app_profile_rules_check", "app_profile_runtime_check", "foreground_profile_check"]
     }
   ],
   "testPresets": [
