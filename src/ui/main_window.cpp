@@ -51,7 +51,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             const bool can_bind = gui->profile_store_available && selected_display(*gui) &&
                                   gui->profiles[index].saved;
             AppendMenuW(menu, MF_STRING | (can_bind ? MF_ENABLED : MF_GRAYED), 4,
-                        L"Bind application...");
+                        L"Use for an app\u2026");
             AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
             AppendMenuW(menu, MF_STRING | (builtin ? MF_GRAYED : MF_ENABLED), 3, L"Delete");
             const int x = GET_X_LPARAM(lparam);
@@ -127,7 +127,6 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         }
         if (!current->profile_store_available) {
             EnableWindow(current->preset_save, FALSE);
-            EnableWindow(current->preset_delete, FALSE);
             set_status(*current,
                        L"Profile file is damaged; legacy profiles are read-only, "
                        L"calibration saving remains available",
@@ -195,19 +194,9 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         if (gui && wparam) cancel_active_preview(*gui);
         return 0;
     case WM_DRAWITEM:
-        if (gui && lparam) {
-            const auto* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lparam);
-            if (item->CtlID == kApplyButton || item->CtlID == kResetButton ||
-                 item->CtlID == kBeforeAfter ||
-                 item->CtlID == kRefreshButton || item->CtlID == kPresetSave ||
-                 item->CtlID == kPresetDelete || item->CtlID == kStartupToggle ||
-                 item->CtlID == kAutoSwitchToggle || item->CtlID == kBindApplication ||
-                 item->CtlID == kAppRules ||
-                (item->CtlID >= kProfileIdBase &&
-                 static_cast<std::size_t>(item->CtlID - kProfileIdBase) < gui->profiles.size())) {
-                draw_owner_button(*item, *gui);
-                return TRUE;
-            }
+        if (gui && lparam && wparam != 0) {  // id 0: menus
+            draw_owner_button(*reinterpret_cast<const DRAWITEMSTRUCT*>(lparam), *gui);
+            return TRUE;
         }
         break;
     case WM_CTLCOLORSTATIC:
@@ -215,28 +204,27 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             HDC dc = reinterpret_cast<HDC>(wparam);
             HWND control = reinterpret_cast<HWND>(lparam);
             SetBkMode(dc, TRANSPARENT);
+            COLORREF color = ui::Theme::text;
             if (control == gui->title) {
-                SetTextColor(dc, ui::Theme::sidebar_text);
-            } else if (control == gui->main_heading || control == gui->tone_heading ||
-                       control == gui->color_heading || control == gui->preview_heading) {
-                SetTextColor(dc, ui::Theme::text);
-            } else if (control == gui->display_caption || control == gui->preset_caption) {
-                SetTextColor(dc, ui::Theme::primary_soft);
-            } else if (control == gui->display_status || control == gui->auto_switch_status) {
-                SetTextColor(dc, ui::Theme::sidebar_secondary);
-            } else if (control == gui->subtitle || control == gui->main_subtitle ||
-                       control == gui->status || control == gui->preview_caption ||
-                       control == gui->tone_caption || control == gui->color_caption) {
-                SetTextColor(dc, ui::Theme::text_secondary);
-            } else {
-                SetTextColor(dc, ui::Theme::text);
+                color = ui::Theme::sidebar_text;
+            } else if (control == gui->display_caption || control == gui->preset_caption ||
+                       control == gui->apps_caption) {
+                color = ui::Theme::sidebar_muted;
+            } else if (control == gui->subtitle || control == gui->display_status ||
+                       control == gui->auto_switch_status) {
+                color = ui::Theme::sidebar_secondary;
+            } else if (control == gui->main_subtitle || control == gui->status) {
+                color = ui::Theme::text_secondary;
+            } else if (control == gui->tone_caption || control == gui->color_caption) {
+                color = ui::Theme::text_muted;
             }
+            SetTextColor(dc, color);
             const AdjustmentBindings bindings = adjustment_bindings(*gui);
             const bool trackbar = std::any_of(
                 bindings.begin(), bindings.end(),
                 [control](const AdjustmentBinding& binding) { return binding.slider == control; });
-            // Native trackbars require an opaque erase brush; text labels inherit
-            // the already-composited parent layer without rectangular islands.
+            // Trackbars paint themselves fully; text labels draw over the
+            // already-composited parent layer without rectangular islands.
             return reinterpret_cast<LRESULT>(trackbar ? gui->background_brush
                                                       : GetStockObject(HOLLOW_BRUSH));
         }
@@ -244,6 +232,11 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
     case WM_CTLCOLOREDIT:
         if (gui) {
             HDC dc = reinterpret_cast<HDC>(wparam);
+            if (reinterpret_cast<HWND>(lparam) == gui->profile_rename) {
+                SetTextColor(dc, ui::Theme::sidebar_text);
+                SetBkColor(dc, ui::Theme::sidebar_field);
+                return reinterpret_cast<LRESULT>(gui->sidebar_brush);
+            }
             SetTextColor(dc, ui::Theme::text);
             SetBkColor(dc, ui::Theme::control_surface);
             return reinterpret_cast<LRESULT>(gui->card_brush);
@@ -270,10 +263,6 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             create_profile_from_current(*gui);
             return 0;
         }
-        if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) == kPresetDelete) {
-            delete_active_preset(*gui);
-            return 0;
-        }
         if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) == kStartupToggle) {
             const bool enabling = !gui->startup_enabled;
             std::wstring error;
@@ -292,12 +281,13 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             toggle_automatic_profiles(*gui);
             return 0;
         }
-        if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) == kBindApplication) {
-            bind_application_profile(*gui, gui->active_preset);
-            return 0;
-        }
         if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) == kAppRules) {
             show_application_rules(*gui);
+            return 0;
+        }
+        if (LOWORD(wparam) == kDisplayCombo &&
+            (HIWORD(wparam) == CBN_DROPDOWN || HIWORD(wparam) == CBN_CLOSEUP)) {
+            InvalidateRect(gui->display_combo, nullptr, FALSE);
             return 0;
         }
         if (LOWORD(wparam) == kDisplayCombo && HIWORD(wparam) == CBN_SELCHANGE) {
@@ -439,28 +429,18 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         PostQuitMessage(0);
         return 0;
     case WM_MOUSEWHEEL:
-        if (gui && gui->profiles.size() > kProfileVisibleRows) {
+        if (gui) {
             POINT cursor{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
             ScreenToClient(window, &cursor);
-            const UINT dpi = GetDpiForWindow(window);
-            const auto scale = [dpi](int value) {
-                return MulDiv(value, static_cast<int>(dpi), 96);
-            };
-            const int content_x = scale(ui::Metrics::profile_content_inset);
-            const int content_right = scale(ui::Metrics::sidebar_width) -
-                                      scale(ui::Metrics::profile_section_inset);
-            const int row_height = scale(ui::Metrics::profile_row_height);
-            const int row_stride = row_height + scale(ui::Metrics::profile_row_gap);
-            const int first_y = scale(252) + scale(18) +
-                                scale(ui::Metrics::profile_title_gap);
-            const int list_bottom = first_y + kProfileVisibleRows * row_height +
-                                    (kProfileVisibleRows - 1) * scale(ui::Metrics::profile_row_gap);
-            const bool over_profile_list = cursor.x >= content_x && cursor.x <= content_right &&
-                                           cursor.y >= first_y && cursor.y <= list_bottom;
-            if (over_profile_list) {
+            const UiGeometry geometry = ui_geometry(*gui);
+            if (PtInRect(&geometry.profile_list, cursor)) {
                 const int wheel_delta = GET_WHEEL_DELTA_WPARAM(wparam);
-                gui->profile_scroll_offset -= (wheel_delta / WHEEL_DELTA) * row_stride;
+                gui->profile_scroll_offset -= wheel_delta * geometry.profile_row_stride / WHEEL_DELTA;
                 layout_controls_for_current_size(*gui);
+                InvalidateRect(window, &geometry.profile_list, FALSE);
+                RECT scrollbar{geometry.profile_list.right, geometry.profile_list.top,
+                               geometry.sidebar_width, geometry.profile_list.bottom};
+                InvalidateRect(window, &scrollbar, FALSE);
                 return 0;
             }
         }

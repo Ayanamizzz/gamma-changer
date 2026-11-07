@@ -93,13 +93,13 @@ void show_tray_menu(HWND window) {
     if (gui) {
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING | (gui->app_profile_config.enabled ? MF_CHECKED : 0),
-                    kTrayAutoSwitchCommand, L"Automatic application profiles");
+                    kTrayAutoSwitchCommand, L"Switch profiles automatically");
         if (gui->app_profile_config.enabled) {
             AppendMenuW(menu, MF_STRING, kTrayAutoPauseCommand,
                         gui->auto_switch_paused ? L"Resume automatic switching"
                                                 : L"Pause automatic switching");
         }
-        AppendMenuW(menu, MF_STRING, kTrayAppRulesCommand, L"Application bindings...");
+        AppendMenuW(menu, MF_STRING, kTrayAppRulesCommand, L"Manage apps\u2026");
     }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kTrayExitCommand, L"Exit");

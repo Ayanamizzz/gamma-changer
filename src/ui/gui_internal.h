@@ -42,7 +42,6 @@ namespace gamma_changer {
 
 constexpr wchar_t kWindowClass[] = L"GammaChangerCppWindow";
 constexpr std::size_t kNoProfile = std::numeric_limits<std::size_t>::max();
-constexpr int kProfileVisibleRows = 4;
 constexpr int kProfileIdBase = 1000;
 constexpr UINT kPreviewTimer = 1;
 constexpr UINT kDisplayRefreshTimer = 2;
@@ -85,7 +84,6 @@ enum ControlId : int {
     kResetButton = 117,
     kStatusLabel = 118,
     kPresetSave = 124,
-    kPresetDelete = 126,
     kDisplayCaption = 127,
     kPresetCaption = 128,
     kMainHeading = 129,
@@ -94,16 +92,15 @@ enum ControlId : int {
     kColorHeading = 132,
     kStartupToggle = 133,
     kPreviewHeading = 134,
-    kPreviewCaption = 135,
     kToneCaption = 136,
     kColorCaption = 137,
     kDisplayStatus = 138,
     kProfileRename = 139,
     kBeforeAfter = 140,
     kAutoSwitchToggle = 141,
-    kBindApplication = 142,
     kAppRules = 143,
     kAutoSwitchStatus = 144,
+    kAppsCaption = 145,
 };
 
 enum class StatusTone {
@@ -130,7 +127,6 @@ struct GuiState {
     HWND tone_heading = nullptr;
     HWND color_heading = nullptr;
     HWND preview_heading = nullptr;
-    HWND preview_caption = nullptr;
     HWND tone_caption = nullptr;
     HWND color_caption = nullptr;
     HWND display_status = nullptr;
@@ -158,12 +154,11 @@ struct GuiState {
     HWND status = nullptr;
     std::vector<HWND> preset_buttons;
     HWND preset_save = nullptr;
-    HWND preset_delete = nullptr;
     HWND profile_rename = nullptr;
     HWND before_after_button = nullptr;
-    HWND auto_switch_button = nullptr;
-    HWND bind_application_button = nullptr;
-    HWND app_rules_button = nullptr;
+    HWND apps_caption = nullptr;
+    HWND auto_switch_button = nullptr;   // "Switch automatically" toggle row
+    HWND app_rules_button = nullptr;     // "Manage apps..."
     HWND auto_switch_status = nullptr;
     HFONT normal_font = nullptr;
     HFONT title_font = nullptr;
@@ -195,6 +190,7 @@ struct GuiState {
     std::size_t active_preset = 0;
     std::unordered_map<std::wstring, std::wstring> preferred_profile_ids;
     int profile_scroll_offset = 0;
+    int input_text_height = 0;  // single-line text height of normal_font
     std::size_t renaming_preset = kNoProfile;
     CalibrationSession session;
     DisplayRampBackend& ramp_backend = system_display_ramp_backend();
@@ -221,6 +217,7 @@ struct GuiState {
 // range, and the CalibrationSettings field it edits. All per-adjustment UI code
 // iterates this table instead of repeating six hand-written cases.
 struct AdjustmentBinding {
+    HWND label;
     HWND edit;
     HWND slider;
     CalibrationRange range;
@@ -229,6 +226,49 @@ struct AdjustmentBinding {
 using AdjustmentBindings = std::array<AdjustmentBinding, 6>;
 AdjustmentBindings adjustment_bindings(const GuiState& gui);
 const AdjustmentBinding* find_adjustment(const AdjustmentBindings& bindings, HWND edit);
+
+// ---------------------------------------------------------------------------
+// Geometry: the one place that knows where things are. Layout positions
+// controls from it; painting, hit-testing and scrolling read the same rects.
+// ---------------------------------------------------------------------------
+struct Scale {
+    UINT dpi = 96;
+    int operator()(int value) const { return MulDiv(value, static_cast<int>(dpi), 96); }
+};
+
+struct AdjustmentRowGeometry {
+    RECT label{};
+    RECT slider{};
+    RECT value_box{};   // painted rounded input
+    RECT value_edit{};  // the EDIT control, vertically centred inside the box
+};
+
+struct UiGeometry {
+    Scale scale;
+    int width = 0;
+    int height = 0;
+    int sidebar_width = 0;
+    int padding = 0;  // sidebar horizontal padding
+    // Sidebar
+    RECT profile_list{};  // visible viewport of the profile rows
+    int profile_row_height = 0;
+    int profile_row_stride = 0;
+    int apps_top = 0;            // APPS caption
+    int sidebar_divider_y = 0;   // above "Start with Windows"
+    // Work area
+    int main_left = 0;
+    int main_right = 0;
+    RECT curve_card{};
+    RECT curve_plot{};
+    RECT tone_card{};
+    RECT color_card{};
+    int footer_top = 0;
+    std::array<AdjustmentRowGeometry, 6> rows{};  // index = adjustment_bindings() order
+};
+
+UiGeometry ui_geometry(const GuiState& gui);
+UiGeometry ui_geometry(const GuiState& gui, int width, int height);
+RECT profile_row_rect(const UiGeometry& geometry, std::size_t index, int scroll_offset);
 
 // Shared internal functions used across the UI translation units.
 LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam);
@@ -318,6 +358,9 @@ void delete_active_preset(GuiState& gui);
 LRESULT CALLBACK profile_rename_proc(HWND edit, UINT message, WPARAM wparam,
                                      LPARAM lparam, UINT_PTR subclass_id,
                                      DWORD_PTR ref_data);
+LRESULT CALLBACK display_combo_proc(HWND combo, UINT message, WPARAM wparam,
+                                    LPARAM lparam, UINT_PTR subclass_id,
+                                    DWORD_PTR ref_data);
 LRESULT CALLBACK profile_proc(HWND item, UINT message, WPARAM wparam,
                               LPARAM lparam, UINT_PTR subclass_id,
                               DWORD_PTR ref_data);

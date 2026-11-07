@@ -110,20 +110,19 @@ std::wstring display_label(const DisplayInfo& display, std::size_t index) {
         name.find(L"PnP") != std::wstring::npos) {
         return L"Screen " + std::to_wstring(index + 1);
     }
-    return name + L"  (Screen " + std::to_wstring(index + 1) + L")";
+    return name + L" \u00b7 Screen " + std::to_wstring(index + 1);
 }
 
 std::wstring display_metadata(const DisplayInfo& display) {
-    std::wstring text = display.device_string.empty() ? display.device_name : display.device_string;
-    if (display.width > 0 && display.height > 0) {
-        text += L"\r\n" + std::to_wstring(display.width) + L" x " +
-                std::to_wstring(display.height);
-        if (display.refresh_rate > 1) {
-            text += L"  |  " + std::to_wstring(display.refresh_rate) + L" Hz";
-        }
-        if (display.primary) text += L"  |  Primary";
-        if (display.hdr_active) text += L"  |  HDR";
+    // The name is already in the selector; this line adds the mode.
+    if (display.width <= 0 || display.height <= 0) {
+        return display.device_string.empty() ? display.device_name : display.device_string;
     }
+    std::wstring text = std::to_wstring(display.width) + L" \u00d7 " +
+                        std::to_wstring(display.height);
+    if (display.refresh_rate > 1) text += L" \u00b7 " + std::to_wstring(display.refresh_rate) + L" Hz";
+    if (display.primary) text += L" \u00b7 Primary";
+    if (display.hdr_active) text += L" \u00b7 HDR";
     return text;
 }
 

@@ -154,7 +154,7 @@ bool check_runtime(const std::filesystem::path& root) {
 
     set_app_fallback_profile(config, id, L"browse");
     events = runtime.apply(config, profiles, displays, L"C:\\editor.exe", false);
-    ok &= expect(events.size() == 1 && events[0].label == L"Default: Browse" &&
+    ok &= expect(events.size() == 1 && events[0].label == L"Browse (other apps)" &&
                      runtime.active(id) && runtime.active(id)->rule_id.empty(),
                  L"the unassigned-app default must be labelled and carry no rule id");
 

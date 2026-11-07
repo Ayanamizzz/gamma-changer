@@ -27,14 +27,18 @@ LRESULT CALLBACK compare_proc(HWND button, UINT message, WPARAM wparam, LPARAM l
 
 AdjustmentBindings adjustment_bindings(const GuiState& gui) {
     return {{
-        {gui.gamma_value, gui.gamma_slider, calibration_ranges::gamma, &CalibrationSettings::gamma},
-        {gui.brightness_value, gui.brightness_slider, calibration_ranges::brightness,
-         &CalibrationSettings::brightness},
-        {gui.contrast_value, gui.contrast_slider, calibration_ranges::contrast,
+        {gui.gamma_label, gui.gamma_value, gui.gamma_slider, calibration_ranges::gamma,
+         &CalibrationSettings::gamma},
+        {gui.brightness_label, gui.brightness_value, gui.brightness_slider,
+         calibration_ranges::brightness, &CalibrationSettings::brightness},
+        {gui.contrast_label, gui.contrast_value, gui.contrast_slider, calibration_ranges::contrast,
          &CalibrationSettings::contrast},
-        {gui.r_gain_value, gui.r_gain_slider, calibration_ranges::gain, &CalibrationSettings::r_gain},
-        {gui.g_gain_value, gui.g_gain_slider, calibration_ranges::gain, &CalibrationSettings::g_gain},
-        {gui.b_gain_value, gui.b_gain_slider, calibration_ranges::gain, &CalibrationSettings::b_gain},
+        {gui.r_gain_label, gui.r_gain_value, gui.r_gain_slider, calibration_ranges::gain,
+         &CalibrationSettings::r_gain},
+        {gui.g_gain_label, gui.g_gain_value, gui.g_gain_slider, calibration_ranges::gain,
+         &CalibrationSettings::g_gain},
+        {gui.b_gain_label, gui.b_gain_value, gui.b_gain_slider, calibration_ranges::gain,
+         &CalibrationSettings::b_gain},
     }};
 }
 
@@ -105,6 +109,7 @@ void normalize_edit(GuiState& gui, const AdjustmentBinding& binding) {
 }
 
 void normalize_all_edits(GuiState& gui) {
+    if (!gui.gamma_slider) return;  // headless GuiState (tests, tools): no edits to read
     for (const auto& binding : adjustment_bindings(gui)) normalize_edit(gui, binding);
     mark_changed(gui);
 }
@@ -119,19 +124,19 @@ LRESULT CALLBACK numeric_edit_proc(HWND edit, UINT message, WPARAM wparam, LPARA
         SetWindowSubclass(edit, numeric_edit_proc, 1, 1);
         if (gui) {
             gui->hovered_numeric = edit;
-            invalidate_control_background(*gui, edit);
+            invalidate_control_background(*gui, edit, Scale{GetDpiForWindow(edit)}(12));
         }
     }
     if (message == WM_MOUSELEAVE) {
         SetWindowSubclass(edit, numeric_edit_proc, 1, 0);
         if (gui) {
             gui->hovered_numeric = nullptr;
-            invalidate_control_background(*gui, edit);
+            invalidate_control_background(*gui, edit, Scale{GetDpiForWindow(edit)}(12));
         }
         return 0;
     }
     if (message == WM_SETFOCUS || message == WM_KILLFOCUS) {
-        if (gui) invalidate_control_background(*gui, edit);
+        if (gui) invalidate_control_background(*gui, edit, Scale{GetDpiForWindow(edit)}(12));
     }
     const AdjustmentBindings bindings =
         gui ? adjustment_bindings(*gui) : AdjustmentBindings{};
@@ -177,45 +182,49 @@ LRESULT CALLBACK slider_proc(HWND slider, UINT message, WPARAM wparam, LPARAM lp
                              UINT_PTR, DWORD_PTR data) {
     if (message == WM_PAINT) {
         PAINTSTRUCT paint{};
-        HDC dc = BeginPaint(slider, &paint);
+        HDC window_dc = BeginPaint(slider, &paint);
         RECT client{};
         GetClientRect(slider, &client);
+        // Double-buffered: parent scene + track + thumb, then one blit.
+        HDC dc = CreateCompatibleDC(window_dc);
+        HBITMAP buffer = CreateCompatibleBitmap(window_dc, client.right, client.bottom);
+        const auto old_buffer = SelectObject(dc, buffer);
         auto* gui = state(GetParent(slider));
         if (gui) paint_parent_layer(slider, dc, *gui);
 
-        const int inset = 7;
-        const int center_y = (client.bottom - client.top) / 2;
+        const Scale s{GetDpiForWindow(slider)};
+        const int inset = s(9);
+        const float center_y = client.bottom / 2.0f;
         const int minimum = static_cast<int>(SendMessageW(slider, TBM_GETRANGEMIN, 0, 0));
         const int maximum = static_cast<int>(SendMessageW(slider, TBM_GETRANGEMAX, 0, 0));
         const int position = static_cast<int>(SendMessageW(slider, TBM_GETPOS, 0, 0));
         const int track_width = std::max(1, static_cast<int>(client.right) - inset * 2);
-        const int thumb_x = inset + MulDiv(position - minimum, track_width,
-                                           std::max(1, maximum - minimum));
-        RECT inactive{inset, center_y - 2, client.right - inset, center_y + 2};
-        RECT active{inset, center_y - 2, thumb_x, center_y + 2};
-        ui::draw_panel(dc, inactive, ui::Theme::track_inactive,
-                       ui::Theme::track_inactive, ui::Metrics::space_1);
-        if (active.right > active.left) {
-            ui::draw_panel(dc, active, ui::Theme::primary, ui::Theme::primary, 4);
+        const float thumb_x = inset + static_cast<float>(position - minimum) * track_width /
+                                          static_cast<float>(std::max(1, maximum - minimum));
+        const bool enabled = IsWindowEnabled(slider) != FALSE;
+        const int half = s(2);
+        const RECT inactive{inset, static_cast<int>(center_y) - half, client.right - inset,
+                            static_cast<int>(center_y) + half};
+        const RECT active{inset, inactive.top, static_cast<int>(thumb_x), inactive.bottom};
+        ui::aa_fill_round_rect(dc, inactive, static_cast<float>(half), ui::Theme::track_inactive);
+        if (enabled && active.right > active.left) {
+            ui::aa_fill_round_rect(dc, active, static_cast<float>(half), ui::Theme::primary);
         }
         const bool focused = GetFocus() == slider;
         const bool hovered = data != 0;
-        if (focused || hovered) {
-            HBRUSH halo = CreateSolidBrush(ui::Theme::primary_soft);
-            const auto old_halo = SelectObject(dc, halo);
-            const auto old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
-            Ellipse(dc, thumb_x - 8, center_y - 8, thumb_x + 9, center_y + 9);
-            SelectObject(dc, old_pen);
-            SelectObject(dc, old_halo);
-            DeleteObject(halo);
+        const float radius = static_cast<float>(s(8));
+        if (enabled && (focused || hovered)) {
+            ui::aa_fill_ellipse(dc, thumb_x, center_y, radius + s(5), ui::Theme::primary, 34);
         }
-        HBRUSH thumb = CreateSolidBrush(ui::Theme::primary);
-        const auto old_thumb = SelectObject(dc, thumb);
-        const auto old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
-        Ellipse(dc, thumb_x - 6, center_y - 6, thumb_x + 7, center_y + 7);
-        SelectObject(dc, old_pen);
-        SelectObject(dc, old_thumb);
-        DeleteObject(thumb);
+        ui::aa_fill_ellipse(dc, thumb_x, center_y + 1.0f, radius, RGB(40, 20, 60), 30);
+        ui::aa_fill_ellipse(dc, thumb_x, center_y, radius, RGB(255, 255, 255));
+        ui::aa_stroke_ellipse(dc, thumb_x, center_y, radius - 1.0f,
+                              enabled ? ui::Theme::primary : ui::Theme::disabled_text, 2.0f);
+
+        BitBlt(window_dc, 0, 0, client.right, client.bottom, dc, 0, 0, SRCCOPY);
+        SelectObject(dc, old_buffer);
+        DeleteObject(buffer);
+        DeleteDC(dc);
         EndPaint(slider, &paint);
         return 0;
     }
@@ -282,6 +291,69 @@ void set_params_to_controls(GuiState& gui, const GammaParams& params) {
 }
 
 
+// Paints the closed display selector as a sidebar field (the native white
+// combo box clashes with the dark sidebar). The drop-down list stays native.
+LRESULT CALLBACK display_combo_proc(HWND combo, UINT message, WPARAM wparam, LPARAM lparam,
+                                    UINT_PTR, DWORD_PTR) {
+    auto* gui = state(GetParent(combo));
+    if (message == WM_PAINT && gui) {
+        PAINTSTRUCT paint{};
+        HDC window_dc = BeginPaint(combo, &paint);
+        RECT client{};
+        GetClientRect(combo, &client);
+        HDC dc = CreateCompatibleDC(window_dc);
+        HBITMAP buffer = CreateCompatibleBitmap(window_dc, client.right, client.bottom);
+        const auto old_buffer = SelectObject(dc, buffer);
+        paint_parent_layer(combo, dc, *gui);
+
+        const Scale s{GetDpiForWindow(combo)};
+        const float radius = static_cast<float>(s(ui::Metrics::control_radius));
+        const bool enabled = IsWindowEnabled(combo) != FALSE;
+        const bool focused = GetFocus() == combo ||
+                             SendMessageW(combo, CB_GETDROPPEDSTATE, 0, 0) != FALSE;
+        ui::aa_fill_round_rect(dc, client, radius, ui::Theme::sidebar_field, enabled ? 255 : 140);
+        ui::aa_stroke_round_rect(dc, client, radius,
+                                 focused ? ui::Theme::primary : ui::Theme::sidebar_field_border,
+                                 focused ? 1.5f : 1.0f);
+        std::wstring text;
+        const LRESULT selected = SendMessageW(combo, CB_GETCURSEL, 0, 0);
+        if (selected != CB_ERR) {
+            const LRESULT length = SendMessageW(combo, CB_GETLBTEXTLEN, selected, 0);
+            if (length > 0) {
+                text.resize(static_cast<std::size_t>(length) + 1);
+                SendMessageW(combo, CB_GETLBTEXT, selected, reinterpret_cast<LPARAM>(text.data()));
+                text.resize(static_cast<std::size_t>(length));
+            }
+        } else if (!enabled) {
+            text = L"No display";
+        }
+        RECT label{client.left + s(12), client.top, client.right - s(32), client.bottom};
+        const auto old_font = SelectObject(dc, gui->normal_font);
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, enabled ? ui::Theme::sidebar_text : ui::Theme::sidebar_muted);
+        DrawTextW(dc, text.c_str(), -1, &label,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        SelectObject(dc, old_font);
+        ui::draw_chevron_down(dc, client.right - s(16), client.bottom / 2, s(4),
+                              ui::Theme::sidebar_secondary);
+
+        BitBlt(window_dc, 0, 0, client.right, client.bottom, dc, 0, 0, SRCCOPY);
+        SelectObject(dc, old_buffer);
+        DeleteObject(buffer);
+        DeleteDC(dc);
+        EndPaint(combo, &paint);
+        return 0;
+    }
+    if (message == WM_ERASEBKGND) return 1;
+    if (message == WM_SETFOCUS || message == WM_KILLFOCUS || message == CB_SETCURSEL) {
+        const LRESULT result = DefSubclassProc(combo, message, wparam, lparam);
+        InvalidateRect(combo, nullptr, FALSE);
+        return result;
+    }
+    if (message == WM_NCDESTROY) RemoveWindowSubclass(combo, display_combo_proc, 1);
+    return DefSubclassProc(combo, message, wparam, lparam);
+}
+
 HWND make_control(DWORD style, LPCWSTR class_name, LPCWSTR text, HWND parent,
                   int id, int x, int y, int width, int height) {
     HWND control = CreateWindowExW(0, class_name, text, style, x, y, width, height,
@@ -310,110 +382,76 @@ HWND make_control_ex(DWORD ex_style, DWORD style, LPCWSTR class_name, LPCWSTR te
 
 
 void create_controls(GuiState& gui) {
-    const UINT dpi = GetDpiForWindow(gui.window);
-    recreate_fonts(gui, dpi);
-    gui.background_brush = CreateSolidBrush(ui::Theme::main_surface);
-    gui.card_brush = CreateSolidBrush(ui::Theme::panel_surface);
-    gui.sidebar_brush = CreateSolidBrush(ui::Theme::sidebar);
+    gui.background_brush = CreateSolidBrush(ui::Theme::card);
+    gui.card_brush = CreateSolidBrush(ui::Theme::control_surface);
+    gui.sidebar_brush = CreateSolidBrush(ui::Theme::sidebar_field);
 
-    gui.title = make_control(WS_CHILD | WS_VISIBLE, L"STATIC", L"Gamma Changer",
-                             gui.window, kTitleLabel, 0, 0, 0, 0);
-    gui.subtitle = make_control(WS_CHILD | WS_VISIBLE, L"STATIC",
-                                L"Display calibration utility",
-                                gui.window, kSubtitleLabel, 0, 0, 0, 0);
-    gui.display_caption = make_control(WS_CHILD | WS_VISIBLE, L"STATIC", L"DISPLAY",
-                                       gui.window, kDisplayCaption, 0, 0, 0, 0);
-    gui.preset_caption = make_control(WS_CHILD | WS_VISIBLE, L"STATIC", L"PROFILES",
-                                      gui.window, kPresetCaption, 0, 0, 0, 0);
-    gui.main_heading = make_control(WS_CHILD | WS_VISIBLE, L"STATIC", L"Display Calibration",
-                                    gui.window, kMainHeading, 0, 0, 0, 0);
-    gui.main_subtitle = make_control(WS_CHILD | WS_VISIBLE, L"STATIC",
-                                     L"Adjust the selected display with live, reversible feedback.",
-                                     gui.window, kMainSubtitle, 0, 0, 0, 0);
-    gui.tone_heading = make_control(WS_CHILD | WS_VISIBLE, L"STATIC", L"BASIC",
-                                    gui.window, kToneHeading, 0, 0, 0, 0);
-    gui.color_heading = make_control(WS_CHILD | WS_VISIBLE, L"STATIC", L"COLOR",
-                                     gui.window, kColorHeading, 0, 0, 0, 0);
-    gui.preview_heading = make_control(WS_CHILD | WS_VISIBLE, L"STATIC", L"Tone Response",
-                                       gui.window, kPreviewHeading, 0, 0, 0, 0);
-    gui.preview_caption = make_control(WS_CHILD | WS_VISIBLE | SS_RIGHT, L"STATIC",
-                                        L"- Reference      -- Adjusted", gui.window, kPreviewCaption,
-                                       0, 0, 0, 0);
-    gui.tone_caption = make_control(WS_CHILD | WS_VISIBLE, L"STATIC",
-                                    L"Luminance and tonal response", gui.window, kToneCaption,
-                                    0, 0, 0, 0);
-    gui.color_caption = make_control(WS_CHILD | WS_VISIBLE, L"STATIC",
-                                     L"Individual RGB channel gain", gui.window, kColorCaption,
-                                     0, 0, 0, 0);
-    gui.display_status = make_control(WS_CHILD | WS_VISIBLE, L"STATIC", L"Detecting displays...",
-                                      gui.window, kDisplayStatus, 0, 0, 0, 0);
+    const auto label = [&](const wchar_t* text, int id, DWORD extra = 0) {
+        return make_control(WS_CHILD | WS_VISIBLE | SS_NOPREFIX | extra, L"STATIC", text,
+                            gui.window, id, 0, 0, 0, 0);
+    };
+    const auto owner_button = [&](const wchar_t* text, int id) {
+        return make_control(WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, L"BUTTON", text,
+                            gui.window, id, 0, 0, 0, 0);
+    };
+
+    // Sidebar
+    gui.title = label(L"Gamma Changer", kTitleLabel);
+    gui.subtitle = label((std::wstring(L"Version ") + kApplicationVersion).c_str(), kSubtitleLabel);
+    gui.display_caption = label(L"DISPLAY", kDisplayCaption);
+    gui.refresh_button = owner_button(L"Refresh displays", kRefreshButton);
     gui.display_combo = make_control(WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_TABSTOP,
                                      WC_COMBOBOXW, nullptr, gui.window, kDisplayCombo,
                                      0, 0, 0, 0);
     SendMessageW(gui.display_combo, CB_SETMINVISIBLE, 8, 0);
-    gui.refresh_button = make_control(WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                                       L"BUTTON", L"", gui.window, kRefreshButton,
-                                       0, 0, 0, 0);
-
-    gui.preset_save = make_control(WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                                   L"BUTTON", L"+  New profile", gui.window,
-                                   kPresetSave, 0, 0, 0, 0);
-    gui.preset_delete = make_control(WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                                     L"BUTTON", L"Delete profile", gui.window,
-                                      kPresetDelete, 0, 0, 0, 0);
+    SetWindowSubclass(gui.display_combo, display_combo_proc, 1, 0);
+    gui.display_status = label(L"Detecting displays...", kDisplayStatus, SS_ENDELLIPSIS);
+    gui.preset_caption = label(L"PROFILES", kPresetCaption);
+    gui.preset_save = owner_button(L"New profile", kPresetSave);
     gui.profile_rename = make_control(WS_CHILD | ES_AUTOHSCROLL | WS_TABSTOP | WS_CLIPSIBLINGS,
-                                      L"EDIT", L"", gui.window, kProfileRename,
-                                      0, 0, 0, 0);
+                                      L"EDIT", L"", gui.window, kProfileRename, 0, 0, 0, 0);
     SendMessageW(gui.profile_rename, EM_SETLIMITTEXT, 48, 0);
     SetWindowSubclass(gui.profile_rename, profile_rename_proc, 1, 0);
-    gui.startup_button = make_control(WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                                      L"BUTTON", L"Start with Windows", gui.window,
-                                      kStartupToggle, 0, 0, 0, 0);
-    gui.bind_application_button = make_control(WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | WS_TABSTOP,
-                                               L"BUTTON", L"Bind app...", gui.window,
-                                               kBindApplication, 0, 0, 0, 0);
-    gui.app_rules_button = make_control(WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | WS_TABSTOP,
-                                        L"BUTTON", L"App rules...", gui.window,
-                                        kAppRules, 0, 0, 0, 0);
-    gui.auto_switch_button = make_control(WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | WS_TABSTOP,
-                                          L"BUTTON", L"Auto-switch: Off", gui.window,
-                                          kAutoSwitchToggle, 0, 0, 0, 0);
-    gui.auto_switch_status = make_control(WS_CHILD | WS_VISIBLE, L"STATIC",
-                                          L"Bind an app to follow its profile", gui.window,
-                                          kAutoSwitchStatus, 0, 0, 0, 0);
+    gui.apps_caption = label(L"APP PROFILES", kAppsCaption);
+    gui.auto_switch_button = owner_button(L"Switch automatically", kAutoSwitchToggle);
+    gui.auto_switch_status = label(L"", kAutoSwitchStatus);  // wraps to two lines
+    gui.app_rules_button = owner_button(L"Manage apps\u2026", kAppRules);
+    gui.startup_button = owner_button(L"Start with Windows", kStartupToggle);
 
-    auto make_slider = [&](int id) {
-        return make_control(WS_CHILD | WS_VISIBLE | TBS_NOTICKS | WS_TABSTOP,
-                            TRACKBAR_CLASSW, nullptr, gui.window, id, 0, 0, 0, 0);
+    // Work area
+    gui.main_heading = label(L"Display calibration", kMainHeading);
+    gui.main_subtitle = label(L"Changes preview live on the selected display and save automatically.",
+                              kMainSubtitle, SS_ENDELLIPSIS);
+    gui.preview_heading = label(L"Tone response", kPreviewHeading);
+    gui.tone_heading = label(L"Tone", kToneHeading);
+    gui.tone_caption = label(L"Brightness, contrast and gamma", kToneCaption, SS_RIGHT);
+    gui.color_heading = label(L"Color balance", kColorHeading);
+    gui.color_caption = label(L"Red, green and blue gain", kColorCaption, SS_RIGHT);
+
+    const auto make_slider = [&](int id) {
+        return make_control(WS_CHILD | WS_VISIBLE | TBS_NOTICKS | WS_TABSTOP, TRACKBAR_CLASSW,
+                            nullptr, gui.window, id, 0, 0, 0, 0);
     };
-    auto make_value = [&](int id) {
-        return make_control_ex(0, WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL |
-                                   ES_RIGHT | WS_TABSTOP,
+    const auto make_value = [&](int id) {
+        return make_control_ex(0, WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_RIGHT | WS_TABSTOP,
                                L"EDIT", L"1.00", gui.window, id, 0, 0, 0, 0);
     };
-
-    gui.gamma_label = make_control(WS_CHILD | WS_VISIBLE, L"STATIC", L"Gamma", gui.window, 0,
-                                   0, 0, 0, 0);
+    gui.gamma_label = label(L"Gamma", 0);
     gui.gamma_slider = make_slider(kGammaSlider);
     gui.gamma_value = make_value(kGammaValue);
-    gui.brightness_label = make_control(WS_CHILD | WS_VISIBLE, L"STATIC", L"Brightness", gui.window, 0,
-                                        0, 0, 0, 0);
+    gui.brightness_label = label(L"Brightness", 0);
     gui.brightness_slider = make_slider(kBrightnessSlider);
     gui.brightness_value = make_value(kBrightnessValue);
-    gui.contrast_label = make_control(WS_CHILD | WS_VISIBLE, L"STATIC", L"Contrast", gui.window, 0,
-                                      0, 0, 0, 0);
+    gui.contrast_label = label(L"Contrast", 0);
     gui.contrast_slider = make_slider(kContrastSlider);
     gui.contrast_value = make_value(kContrastValue);
-    gui.r_gain_label = make_control(WS_CHILD | WS_VISIBLE, L"STATIC", L"Red gain", gui.window, 0,
-                                    0, 0, 0, 0);
+    gui.r_gain_label = label(L"Red", 0);
     gui.r_gain_slider = make_slider(kRGainSlider);
     gui.r_gain_value = make_value(kRGainValue);
-    gui.g_gain_label = make_control(WS_CHILD | WS_VISIBLE, L"STATIC", L"Green gain", gui.window, 0,
-                                    0, 0, 0, 0);
+    gui.g_gain_label = label(L"Green", 0);
     gui.g_gain_slider = make_slider(kGGainSlider);
     gui.g_gain_value = make_value(kGGainValue);
-    gui.b_gain_label = make_control(WS_CHILD | WS_VISIBLE, L"STATIC", L"Blue gain", gui.window, 0,
-                                    0, 0, 0, 0);
+    gui.b_gain_label = label(L"Blue", 0);
     gui.b_gain_slider = make_slider(kBGainSlider);
     gui.b_gain_value = make_value(kBGainValue);
 
@@ -422,94 +460,20 @@ void create_controls(GuiState& gui) {
                      setting_to_steps(binding.range.minimum));
         SendMessageW(binding.slider, TBM_SETRANGEMAX, TRUE,
                      setting_to_steps(binding.range.maximum));
+        SetWindowSubclass(binding.slider, slider_proc, 1, 0);
+        SendMessageW(binding.edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0);
+        SetWindowSubclass(binding.edit, numeric_edit_proc, 1, 0);
     }
 
-    if (FAILED(SetWindowTheme(gui.display_combo, L"Explorer", nullptr))) {
-        log_message(LogLevel::warning, L"Could not apply the Explorer theme to the display list");
-    }
-    const std::array<HWND, 13> themed_controls{
-        gui.gamma_slider, gui.brightness_slider, gui.contrast_slider,
-        gui.r_gain_slider, gui.g_gain_slider, gui.b_gain_slider,
-        gui.gamma_value, gui.brightness_value, gui.contrast_value,
-        gui.r_gain_value, gui.g_gain_value, gui.b_gain_value,
-        gui.profile_rename,
-    };
-    for (HWND control : themed_controls) {
-        if (FAILED(SetWindowTheme(control, L"Explorer", nullptr))) {
-            log_message(LogLevel::warning, L"Could not apply the Explorer theme to a control");
-        }
-    }
-
-    gui.apply_button = make_control(WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                                     L"BUTTON", L"Saved", gui.window, kApplyButton,
-                                    0, 0, 0, 0);
-    gui.reset_button = make_control(WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                                     L"BUTTON", L"Restore defaults", gui.window, kResetButton,
-                                    0, 0, 0, 0);
-    gui.before_after_button = make_control(WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                                            L"BUTTON", L"Hold original", gui.window,
-                                            kBeforeAfter, 0, 0, 0, 0);
+    // Footer
+    gui.before_after_button = owner_button(L"Hold to compare", kBeforeAfter);
     SetWindowSubclass(gui.before_after_button, compare_proc, 1, 0);
-    gui.status = make_control(WS_CHILD | WS_VISIBLE, L"STATIC", L"Ready",
-                              gui.window, kStatusLabel, 0, 0, 0, 0);
+    gui.reset_button = owner_button(L"Restore defaults", kResetButton);
+    gui.apply_button = owner_button(L"Saved", kApplyButton);
+    gui.status = label(L"Ready", kStatusLabel, SS_ENDELLIPSIS);
     EnableWindow(gui.apply_button, FALSE);
 
-    apply_font(gui.title, gui.title_font);
-    apply_font(gui.subtitle, gui.normal_font);
-    apply_font(gui.display_caption, gui.caption_font);
-    apply_font(gui.preset_caption, gui.caption_font);
-    apply_font(gui.main_heading, gui.heading_font);
-    apply_font(gui.main_subtitle, gui.normal_font);
-    apply_font(gui.tone_heading, gui.section_font);
-    apply_font(gui.color_heading, gui.section_font);
-    apply_font(gui.preview_heading, gui.panel_font);
-    apply_font(gui.preview_caption, gui.small_font);
-    apply_font(gui.tone_caption, gui.small_font);
-    apply_font(gui.color_caption, gui.small_font);
-    apply_font(gui.display_status, gui.small_font);
-    apply_font(gui.gamma_label, gui.normal_font);
-    apply_font(gui.brightness_label, gui.normal_font);
-    apply_font(gui.contrast_label, gui.normal_font);
-    apply_font(gui.r_gain_label, gui.normal_font);
-    apply_font(gui.g_gain_label, gui.normal_font);
-    apply_font(gui.b_gain_label, gui.normal_font);
-    apply_font(gui.display_combo, gui.normal_font);
-    apply_font(gui.refresh_button, gui.normal_font);
-    for (auto button : gui.preset_buttons) apply_font(button, gui.normal_font);
-    apply_font(gui.preset_save, gui.normal_font);
-    apply_font(gui.preset_delete, gui.normal_font);
-    apply_font(gui.profile_rename, gui.normal_font);
-    apply_font(gui.startup_button, gui.normal_font);
-    apply_font(gui.bind_application_button, gui.normal_font);
-    apply_font(gui.app_rules_button, gui.normal_font);
-    apply_font(gui.auto_switch_button, gui.normal_font);
-    apply_font(gui.auto_switch_status, gui.small_font);
-    apply_font(gui.apply_button, gui.normal_font);
-    apply_font(gui.reset_button, gui.normal_font);
-    apply_font(gui.before_after_button, gui.normal_font);
-    apply_font(gui.status, gui.normal_font);
-    apply_font(gui.gamma_value, gui.normal_font);
-    apply_font(gui.brightness_value, gui.normal_font);
-    apply_font(gui.contrast_value, gui.normal_font);
-    apply_font(gui.r_gain_value, gui.normal_font);
-    apply_font(gui.g_gain_value, gui.normal_font);
-    apply_font(gui.b_gain_value, gui.normal_font);
-
-    const std::array<HWND, 6> numeric_edits{
-        gui.gamma_value, gui.brightness_value, gui.contrast_value,
-        gui.r_gain_value, gui.g_gain_value, gui.b_gain_value,
-    };
-    for (HWND edit : numeric_edits) {
-        SendMessageW(edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
-                     MAKELPARAM(6, 6));
-        SetWindowSubclass(edit, numeric_edit_proc, 1, 0);
-    }
-    const std::array<HWND, 6> sliders{
-        gui.gamma_slider, gui.brightness_slider, gui.contrast_slider,
-        gui.r_gain_slider, gui.g_gain_slider, gui.b_gain_slider,
-    };
-    for (HWND slider : sliders) SetWindowSubclass(slider, slider_proc, 1, 0);
-
+    recreate_fonts(gui, GetDpiForWindow(gui.window));
     RECT client{};
     GetClientRect(gui.window, &client);
     layout_controls(gui, client.right - client.left, client.bottom - client.top);

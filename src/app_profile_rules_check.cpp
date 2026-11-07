@@ -186,64 +186,52 @@ bool check_fallback_defaults() {
     return ok;
 }
 
-bool check_filter_settings() {
-    const CalibrationSettings baseline{1.0, 0.0, 1.0, 1.0, 1.0, 1.0};
-    const CalibrationSettings edited{1.3, -0.12, 1.2, 1.1, 0.9, 0.8};
-    const CalibrationSettings second_edit{1.6, 0.1, 1.1, 0.8, 1.2, 1.3};
-    const auto same_settings = [](const CalibrationSettings& left, const CalibrationSettings& right) {
-        return left.gamma == right.gamma && left.brightness == right.brightness &&
-               left.contrast == right.contrast && left.r_gain == right.r_gain &&
-               left.g_gain == right.g_gain && left.b_gain == right.b_gain;
-    };
-    std::vector<Profile> profiles{
-        {L"library-template", L"Soft template", baseline, true},
-        {L"app-filter-1", L"Existing application filter", baseline, true},
-    };
+bool check_assignments() {
+    const std::wstring screen = L"screen-a";
     AppProfileConfig config;
-    set_app_profile_rule(config, {L"C:\\Tools\\Made Up App.exe", L"screen-a", L"library-template",
-                                 true, L"", L"Night"});
-    const std::wstring first_id = config.rules.back().id;
-    set_app_profile_rule(config, {L"C:\\Tools\\Another App.exe", L"screen-a", L"library-template",
-                                 true, L"", L"Default"});
-    const std::wstring other_id = config.rules.back().id;
-    bool ok = expect(update_app_filter_settings(config, profiles, first_id, edited),
-                     L"editing a valid application filter must succeed");
-    const auto* first = find_app_profile_rule_by_id(config, first_id);
-    const auto* other = find_app_profile_rule_by_id(config, other_id);
-    ok &= expect(first && first->profile_id == L"app-filter-2" &&
-                     other && other->profile_id == L"library-template" && profiles.size() == 3 &&
-                     same_settings(profiles[0].settings, baseline) &&
-                     same_settings(profiles[1].settings, baseline) &&
-                     same_settings(profiles[2].settings, edited) &&
-                     profiles[2].name == L"Made Up App.exe - Night" && profiles[2].saved,
-                 L"editing app A must clone its named filter without changing app B, the shared template or existing ids");
-    ok &= expect(update_app_filter_settings(config, profiles, first_id, second_edit) &&
-                     profiles.size() == 3 && config.rules[0].profile_id == L"app-filter-2" &&
-                     same_settings(profiles[2].settings, second_edit) &&
-                     same_settings(profiles[0].settings, baseline),
-                 L"editing an exclusive app-owned filter again must reuse it without an extra clone");
+    // Legacy shape: two rules for one app on one display (the second wins
+    // because the first is disabled), plus a rule on another display.
+    config.rules = {
+        {L"C:\\Apps\\Browser.exe", screen, L"old", false, L"rule-1", L"Old"},
+        {L"c:/apps/browser.exe", screen, L"common", true, L"rule-2", L"Browser filter"},
+        {L"C:\\Games\\Game.exe", screen, L"gaming", false, L"rule-3", L""},
+        {L"C:\\Apps\\Browser.exe", L"screen-b", L"night", true, L"rule-4", L""},
+    };
+    auto rows = app_assignments(config, screen);
+    bool ok = expect(rows.size() == 2 && rows[0].profile_id == L"common" && rows[0].enabled &&
+                         rows[1].profile_id == L"gaming" && !rows[1].enabled,
+                     L"the view must show one row per app with the rule that actually wins");
 
-    set_app_profile_rule(config, {L"D:\\Third App.exe", L"screen-b", L"app-filter-2", false});
-    const std::wstring shared_id = config.rules.back().id;
-    ok &= expect(update_app_filter_settings(config, profiles, shared_id, edited) && profiles.size() == 4 &&
-                     config.rules[0].profile_id == L"app-filter-2" &&
-                     config.rules.back().profile_id == L"app-filter-3" &&
-                     same_settings(profiles[2].settings, second_edit) &&
-                     same_settings(profiles[3].settings, edited) &&
-                     profiles[3].name == L"Third App.exe - Made Up App.exe - Night",
-                 L"editing a shared app-owned filter must clone it and use its template name when the rule has no name");
-    ok &= expect(!update_app_filter_settings(config, profiles, L"missing-rule", edited) && profiles.size() == 4,
-                 L"a missing application rule must not create a filter");
-    set_app_profile_rule(config, {L"C:\\Missing Profile.exe", L"screen-a", L"removed-template", true});
-    ok &= expect(!update_app_filter_settings(config, profiles, config.rules.back().id, edited) &&
-                     profiles.size() == 4 && config.rules.back().profile_id == L"removed-template",
-                 L"a missing template must leave the rule and profile collection unchanged");
-    set_app_fallback_profile(config, L"screen-a", L"app-filter-2");
-    ok &= expect(update_app_filter_settings(config, profiles, first_id, edited) && profiles.size() == 5 &&
-                     find_app_profile_rule_by_id(config, first_id)->profile_id == L"app-filter-4" &&
-                     find_app_fallback_profile(config, L"screen-a")->profile_id == L"app-filter-2" &&
-                     same_settings(profiles[2].settings, second_edit),
-                 L"editing a filter shared with the unassigned-app default must preserve the default's settings");
+    assign_app_profile(config, L"C:\\Apps\\Browser.exe", screen, L"reading");
+    rows = app_assignments(config, screen);
+    const auto* kept = find_app_profile_rule_by_id(config, L"rule-2");
+    ok &= expect(kept && kept->profile_id == L"reading" && kept->name.empty() &&
+                     !find_app_profile_rule_by_id(config, L"rule-1") &&
+                     find_app_profile_rule_by_id(config, L"rule-4") && config.rules.size() == 3,
+                 L"assigning must keep the winning rule id, collapse the group and leave other displays alone");
+    ok &= expect(!config.enabled, L"assigning must never turn automatic switching on by itself");
+
+    assign_app_profile(config, L"C:\\Games\\Game.exe", screen, L"gaming");
+    ok &= expect(find_app_profile_rule_by_id(config, L"rule-3")->enabled,
+                 L"assigning a disabled legacy app must re-enable it");
+
+    assign_app_profile(config, L"D:\\New\\Editor.exe", screen, L"common");
+    rows = app_assignments(config, screen);
+    ok &= expect(rows.size() == 3 && rows[2].executable_path == L"D:\\New\\Editor.exe" &&
+                     !config.rules.back().id.empty(),
+                 L"assigning a new app must append a rule with a fresh id");
+
+    ok &= expect(unassign_app_profile(config, L"c:/apps/BROWSER.exe", screen) &&
+                     app_assignments(config, screen).size() == 2 &&
+                     find_app_profile_rule_by_id(config, L"rule-4"),
+                 L"removing an app must drop it only on the chosen display");
+    ok &= expect(!unassign_app_profile(config, L"C:\\Missing.exe", screen),
+                 L"removing an unknown app reports no change");
+
+    set_app_fallback_profile(config, L"screen-c", L"common");
+    const auto ids = app_profile_display_ids(config);
+    ok &= expect(ids.size() == 3 && ids[2] == L"screen-c",
+                 L"display ids must include rule and default-only displays once each");
     return ok;
 }
 
@@ -489,7 +477,7 @@ int main() {
     ok &= check_selection();
     ok &= check_binding();
     ok &= check_fallback_defaults();
-    ok &= check_filter_settings();
+    ok &= check_assignments();
 #if defined(_WIN32)
     ok &= check_store();
     ok &= check_window_identity();

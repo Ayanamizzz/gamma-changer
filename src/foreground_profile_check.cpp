@@ -1,7 +1,8 @@
+// Native GUI regression checks: real dialogs and the real window procedure,
+// with isolated storage and a fake gamma backend (no display is ever changed).
+#include "ui/app_dialogs.h"
 #include "ui/gui_internal.h"
-// Keep the actual native dialogs and anonymous draft helpers under regression
-// coverage without introducing a production library solely for test access.
-#include "ui/app_profiles.cpp"
+
 #include <filesystem>
 #include <iostream>
 
@@ -28,6 +29,36 @@ struct FakeBackend final : DisplayRampBackend {
         return true;
     }
 };
+
+bool controls_inside(HWND dialog) {
+    RECT client{};
+    GetClientRect(dialog, &client);
+    bool ok = true;
+    for (HWND child = GetWindow(dialog, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
+        RECT rect{};
+        GetWindowRect(child, &rect);
+        MapWindowPoints(nullptr, dialog, reinterpret_cast<POINT*>(&rect), 2);
+        ok &= rect.left >= 0 && rect.top >= 0 && rect.right <= client.right &&
+              rect.bottom <= client.bottom;
+    }
+    return ok;
+}
+
+void select_list_row(HWND list, int row) {
+    ListView_SetItemState(list, row, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+}
+
+std::wstring list_text(HWND list, int row, int column) {
+    wchar_t text[256]{};
+    ListView_GetItemText(list, row, column, text, static_cast<int>(std::size(text)));
+    return text;
+}
+
+void choose_combo(HWND dialog, int id, int index) {
+    HWND combo = GetDlgItem(dialog, id);
+    SendMessageW(combo, CB_SETCURSEL, static_cast<WPARAM>(index), 0);
+    SendMessageW(dialog, WM_COMMAND, MAKEWPARAM(id, CBN_SELCHANGE), reinterpret_cast<LPARAM>(combo));
+}
 
 bool check_application_switching(const std::filesystem::path& root) {
     FakeBackend backend;
@@ -104,268 +135,246 @@ bool check_application_switching(const std::filesystem::path& root) {
     return ok;
 }
 
-bool check_default_dialog(const std::filesystem::path& root) {
-    INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_LISTVIEW_CLASSES};
-    if (!InitCommonControlsEx(&controls)) return false;
-    HMODULE resources = GetModuleHandleW(nullptr);
-    if (!resources) return false;
-    FakeBackend backend;
-    GuiState gui(root, backend);
-    DisplayInfo display;
-    display.device_name = L"FAKE-DISPLAY";
-    display.stable_id = L"fake-screen";
-    gui.displays.push_back(display);
-    gui.profiles = {{L"common", L"Common", default_params(), true}};
-    gui.auto_switch_paused = true;
-    WNDCLASSW owner_class{};
-    owner_class.lpfnWndProc = DefWindowProcW;
-    owner_class.hInstance = GetModuleHandleW(nullptr);
-    owner_class.lpszClassName = L"GammaChangerHiddenRulesOwner";
-    if (!RegisterClassW(&owner_class)) { return false; }
-    gui.window = CreateWindowExW(0, owner_class.lpszClassName, L"Hidden rules owner", WS_OVERLAPPED,
-                                  0, 0, 100, 100, nullptr, nullptr, owner_class.hInstance, nullptr);
-    bool ok = gui.window != nullptr;
-    for (const int step : {0, 1, 2}) {
-        const bool save = step != 0;
-        if (step == 2) {
-            gui.app_profile_config.enabled = false;
-            gui.auto_switch_paused = true;
-        }
-        RulesDialogState draft{gui, gui.app_profile_config, gui.profiles};
-        HWND dialog = CreateDialogParamW(resources, MAKEINTRESOURCEW(IDD_APP_RULES), gui.window,
-                                          rules_dialog_proc, reinterpret_cast<LPARAM>(&draft));
-        if (!dialog) { ok = false; break; }
-        ok &= !draft.resume_on_save && draft.config.enabled == gui.app_profile_config.enabled;
-        RECT client{};
-        GetClientRect(dialog, &client);
-        for (HWND child = GetWindow(dialog, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
-            RECT rectangle{};
-            GetWindowRect(child, &rectangle);
-            MapWindowPoints(nullptr, dialog, reinterpret_cast<POINT*>(&rectangle), 2);
-            ok &= rectangle.left >= 0 && rectangle.top >= 0 && rectangle.right <= client.right && rectangle.bottom <= client.bottom;
-        }
-        HWND combo = GetDlgItem(dialog, IDC_FALLBACK_PROFILE);
-        ok &= combo && SendMessageW(combo, CB_GETCOUNT, 0, 0) == 2;
-        SendMessageW(combo, CB_SETCURSEL, 1, 0);
-        SendMessageW(dialog, WM_COMMAND, MAKEWPARAM(IDC_FALLBACK_PROFILE, step == 2 ? CBN_SELENDOK : CBN_SELCHANGE),
-                     reinterpret_cast<LPARAM>(combo));
-        if (step < 2) ok &= !find_app_fallback_profile(gui.app_profile_config, display.stable_id);
-        SendMessageW(dialog, WM_COMMAND, save ? IDOK : IDCANCEL, 0);
-        const auto* preference = find_app_fallback_profile(gui.app_profile_config, display.stable_id);
-        ok &= save ? preference && preference->profile_id == L"common" && gui.app_profile_config.enabled && !gui.auto_switch_paused
-                   : !preference && gui.auto_switch_paused;
-        if (IsWindow(dialog)) DestroyWindow(dialog);
-    }
-    gui.foreground_watcher.stop();
-    if (gui.window) DestroyWindow(gui.window);
-    UnregisterClassW(owner_class.lpszClassName, owner_class.hInstance);
-
-    std::cout << (ok ? "PASS" : "FAIL") << ": hidden native default chooser; control bounds; cancel preserves preference; save and reselect persist/resume\n";
-    return ok;
-}
-
-bool check_running_picker() {
-    HMODULE resources = GetModuleHandleW(nullptr);
-    if (!resources) return false;
+bool check_assign_dialog() {
+    const std::vector<RunningApplication> running{
+        {L"", L"Protected game", 11, ERROR_ACCESS_DENIED},
+        {L"C:\\Games\\Game.exe", L"Game window", 22, ERROR_SUCCESS},
+        {L"D:\\Portable\\Game.exe", L"Another installation", 33, ERROR_SUCCESS},
+        {L"C:\\Apps\\Browser.exe", L"Browser", 44, ERROR_SUCCESS},
+    };
+    const std::vector<Profile> profiles{{L"common", L"Common", default_params(), true},
+                                        {L"draft", L"Draft", default_params(), false},
+                                        {L"gaming", L"Gaming", default_params(), true}};
     bool ok = true;
-    for (const bool refresh : {false, true}) {
-        RunningAppPickerState picker{{
-            {L"", L"Protected game", 11, ERROR_ACCESS_DENIED},
-            {L"C:\\Games\\Game.exe", L"Game window", 22, ERROR_SUCCESS},
-            {L"D:\\Portable\\Game.exe", L"Another installation", 33, ERROR_SUCCESS},
-        }, L"C:\\Games\\Game.exe", {}, false};
-        HWND dialog = CreateDialogParamW(resources, MAKEINTRESOURCEW(IDD_RUNNING_APPS), nullptr,
-                                          running_app_picker_proc, reinterpret_cast<LPARAM>(&picker));
-        if (!dialog) { ok = false; break; }
-        RECT client{};
-        GetClientRect(dialog, &client);
-        for (HWND child = GetWindow(dialog, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
-            RECT rectangle{};
-            GetWindowRect(child, &rectangle);
-            MapWindowPoints(nullptr, dialog, reinterpret_cast<POINT*>(&rectangle), 2);
-            ok &= rectangle.left >= 0 && rectangle.top >= 0 && rectangle.right <= client.right && rectangle.bottom <= client.bottom;
-        }
-        HWND list = GetDlgItem(dialog, IDC_RUNNING_APP_LIST);
-        ok &= ListView_GetItemCount(list) == 3 && selected_running_app(dialog, picker)->executable_path == L"C:\\Games\\Game.exe";
-        if (refresh) {
-            SendMessageW(dialog, WM_COMMAND, IDC_RUNNING_APP_REFRESH, 0);
-            ok &= ListView_GetItemCount(list) == static_cast<int>(picker.applications.size());
-            SendMessageW(dialog, WM_COMMAND, IDCANCEL, 0);
-            ok &= picker.selected_path.empty();
-        } else {
-            ListView_SetItemState(list, 0, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-            ok &= !IsWindowEnabled(GetDlgItem(dialog, IDOK));
-            SendMessageW(dialog, WM_COMMAND, IDOK, 0);
-            ok &= picker.selected_path.empty();
-            ListView_SetItemState(list, 2, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-            ok &= IsWindowEnabled(GetDlgItem(dialog, IDOK)) != FALSE;
-            NMHDR double_click{list, IDC_RUNNING_APP_LIST, NM_DBLCLK};
-            SendMessageW(dialog, WM_NOTIFY, IDC_RUNNING_APP_LIST, reinterpret_cast<LPARAM>(&double_click));
-            ok &= picker.selected_path == L"D:\\Portable\\Game.exe";
-        }
-        if (IsWindow(dialog)) DestroyWindow(dialog);
-    }
+    unsigned refreshes = 0;
 
-    std::cout << (ok ? "PASS" : "FAIL") << ": hidden running-app picker; preselection; unreadable-path gating; exact-path double-click selection; refresh/cancel; control bounds\n";
+    // New assignment: last active app first and preselected; only saved profiles.
+    AppAssignDraft draft;
+    draft.profiles = profiles;
+    draft.profile_id = L"gaming";
+    draft.last_active_path = L"C:\\Apps\\Browser.exe";
+    draft.running_apps = [&] { ++refreshes; return running; };
+    HWND dialog = CreateDialogParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_APP_ASSIGN),
+                                     nullptr, app_assign_dialog_proc,
+                                     reinterpret_cast<LPARAM>(&draft));
+    if (!dialog) return false;
+    HWND list = GetDlgItem(dialog, IDC_ASSIGN_APP_LIST);
+    ok &= controls_inside(dialog) && ListView_GetItemCount(list) == 4 &&
+          ListView_GetNextItem(list, -1, LVNI_SELECTED) == 0 &&
+          draft.rows[0].executable_path == L"C:\\Apps\\Browser.exe";
+    ok &= SendDlgItemMessageW(dialog, IDC_ASSIGN_PROFILE, CB_GETCOUNT, 0, 0) == 2 &&
+          SendDlgItemMessageW(dialog, IDC_ASSIGN_PROFILE, CB_GETCURSEL, 0, 0) == 1;
+    // Unreadable process: OK disabled and pressing it does nothing.
+    select_list_row(list, 1);
+    ok &= draft.rows[1].executable_path.empty() && !IsWindowEnabled(GetDlgItem(dialog, IDOK));
+    SendMessageW(dialog, WM_COMMAND, IDOK, 0);
+    ok &= IsWindow(dialog) != FALSE;
+    // Same file name, different installation: the exact path is chosen.
+    select_list_row(list, 3);
+    choose_combo(dialog, IDC_ASSIGN_PROFILE, 0);
+    NMHDR double_click{list, IDC_ASSIGN_APP_LIST, NM_DBLCLK};
+    SendMessageW(dialog, WM_NOTIFY, IDC_ASSIGN_APP_LIST, reinterpret_cast<LPARAM>(&double_click));
+    ok &= draft.executable_path == L"D:\\Portable\\Game.exe" && draft.profile_id == L"common";
+    if (IsWindow(dialog)) DestroyWindow(dialog);
+
+    // Change: an app that is not running stays listed and selected; refresh
+    // keeps the selection.
+    AppAssignDraft change;
+    change.profiles = profiles;
+    change.executable_path = L"E:\\Old\\Tool.exe";
+    change.profile_id = L"common";
+    change.running_apps = [&] { ++refreshes; return running; };
+    dialog = CreateDialogParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_APP_ASSIGN),
+                                nullptr, app_assign_dialog_proc, reinterpret_cast<LPARAM>(&change));
+    if (!dialog) return false;
+    list = GetDlgItem(dialog, IDC_ASSIGN_APP_LIST);
+    ok &= ListView_GetItemCount(list) == 5 && list_text(list, 0, 1) == L"Not running" &&
+          ListView_GetNextItem(list, -1, LVNI_SELECTED) == 0 &&
+          IsWindowEnabled(GetDlgItem(dialog, IDOK)) != FALSE;
+    const unsigned before = refreshes;
+    SendMessageW(dialog, WM_COMMAND, IDC_ASSIGN_REFRESH, 0);
+    ok &= refreshes == before + 1 && ListView_GetNextItem(list, -1, LVNI_SELECTED) == 0;
+    SendMessageW(dialog, WM_COMMAND, IDCANCEL, 0);
+    ok &= change.executable_path == L"E:\\Old\\Tool.exe";
+    if (IsWindow(dialog)) DestroyWindow(dialog);
+
+    std::cout << (ok ? "PASS" : "FAIL")
+              << ": choose-app dialog; last-active preselection; saved profiles only; unreadable "
+                 "rows gated; exact-path selection; not-running app kept across refresh\n";
     return ok;
 }
 
-constexpr UINT_PTR kSettingsAutomationTimer = 0x7001;
-constexpr wchar_t kSettingsAutomationProperty[] = L"GammaChanger.Check.SettingsAutomation";
+bool check_profiles_dialog() {
+    const std::wstring screen = L"screen-a";
+    AppProfilesDraft draft;
+    draft.profiles = {{L"common", L"Common", default_params(), true},
+                      {L"gaming", L"Gaming", default_params(), true}};
+    draft.displays = {{screen, L"Screen 1"}};
+    draft.display_id = screen;
+    // Legacy config: a second display that is disconnected now.
+    draft.config.rules = {{L"C:\\Apps\\Browser.exe", screen, L"common", true, L"rule-1", L""},
+                          {L"C:\\Apps\\Browser.exe", L"screen-b", L"gaming", true, L"rule-2", L""}};
+    std::wstring next_path = L"C:\\Games\\Game.exe";
+    std::wstring next_profile = L"gaming";
+    unsigned chooser_calls = 0;
+    draft.choose = [&](HWND, AppAssignDraft& pick) {
+        ++chooser_calls;
+        pick.executable_path = next_path;
+        pick.profile_id = next_profile;
+        return true;
+    };
+    unsigned commits = 0;
+    bool commit_result = false;
+    AppProfileConfig committed;
+    draft.commit = [&](const AppProfileConfig& config, std::wstring& error) {
+        ++commits;
+        committed = config;
+        if (!commit_result) error = L"disk full";
+        return commit_result;
+    };
 
-struct SettingsAutomation {
-    HWND rules_dialog;
-    bool submitted = false;
+    HWND dialog = CreateDialogParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_APP_PROFILES),
+                                     nullptr, app_profiles_dialog_proc,
+                                     reinterpret_cast<LPARAM>(&draft));
+    if (!dialog) return false;
+    HWND list = GetDlgItem(dialog, IDC_APP_LIST);
+    bool ok = true;
+    int step_number = 0;
+    const auto step = [&](bool condition) {
+        ++step_number;
+        if (!condition) std::cout << "  app-profiles dialog step " << step_number << " failed\n";
+        ok &= condition;
+    };
+    step(controls_inside(dialog));
+    step(IsDlgButtonChecked(dialog, IDC_APP_AUTO_SWITCH) == BST_UNCHECKED &&
+          ListView_GetItemCount(list) == 1 && list_text(list, 0, 1) == L"Common");
+    step(SendDlgItemMessageW(dialog, IDC_APP_DISPLAY, CB_GETCOUNT, 0, 0) == 2 &&
+          (GetWindowLongPtrW(GetDlgItem(dialog, IDC_APP_DISPLAY), GWL_STYLE) & WS_VISIBLE) != 0);
+
+    // Add: one dialog step, switching turned on (visible, not yet saved).
+    SendMessageW(dialog, WM_COMMAND, IDC_APP_ADD, 0);
+    step(chooser_calls == 1 && ListView_GetItemCount(list) == 2 &&
+          list_text(list, 1, 0) == L"Game.exe" && list_text(list, 1, 1) == L"Gaming" &&
+          IsDlgButtonChecked(dialog, IDC_APP_AUTO_SWITCH) == BST_CHECKED && draft.config.enabled);
+
+    // Change the browser to Gaming via the selected row.
+    select_list_row(list, 0);
+    next_path = L"C:\\Apps\\Browser.exe";
+    SendMessageW(dialog, WM_COMMAND, IDC_APP_CHANGE, 0);
+    step(list_text(list, 0, 1) == L"Gaming" &&
+          find_app_profile_rule_by_id(draft.config, L"rule-1")->profile_id == L"gaming");
+
+    // Remove the game with the Delete key.
+    select_list_row(list, 1);
+    NMLVKEYDOWN key{{list, IDC_APP_LIST, LVN_KEYDOWN}, VK_DELETE, 0};
+    SendMessageW(dialog, WM_NOTIFY, IDC_APP_LIST, reinterpret_cast<LPARAM>(&key));
+    step(ListView_GetItemCount(list) == 1);
+
+    // Other apps -> Common on this display only.
+    choose_combo(dialog, IDC_APP_OTHER_PROFILE, 1);
+    const auto* fallback = find_app_fallback_profile(draft.config, screen);
+    step(fallback && fallback->profile_id == L"common");
+
+    // The disconnected display keeps its own assignment.
+    choose_combo(dialog, IDC_APP_DISPLAY, 1);
+    step(draft.display_id == L"screen-b" && ListView_GetItemCount(list) == 1 &&
+          list_text(list, 0, 1) == L"Gaming");
+
+    // A failed save keeps the dialog open; a successful one closes it.
+    SendMessageW(dialog, WM_COMMAND, IDOK, 0);
+    wchar_t hint[128]{};
+    GetDlgItemTextW(dialog, IDC_APP_HINT, hint, static_cast<int>(std::size(hint)));
+    step(commits == 1 && std::wstring(hint).find(L"disk full") != std::wstring::npos);
+    commit_result = true;
+    SendMessageW(dialog, WM_COMMAND, IDOK, 0);
+    step(commits == 2 && committed.enabled && committed.rules.size() == 2);
+    if (IsWindow(dialog)) DestroyWindow(dialog);
+
+    // Cancel never commits.
+    AppProfilesDraft cancel = draft;
+    commits = 0;
+    dialog = CreateDialogParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_APP_PROFILES),
+                                nullptr, app_profiles_dialog_proc, reinterpret_cast<LPARAM>(&cancel));
+    if (!dialog) return false;
+    SendMessageW(dialog, WM_COMMAND, IDC_APP_AUTO_SWITCH, 0);
+    SendMessageW(dialog, WM_COMMAND, IDCANCEL, 0);
+    step(commits == 0);
+    if (IsWindow(dialog)) DestroyWindow(dialog);
+
+    std::cout << (ok ? "PASS" : "FAIL")
+              << ": app-profiles dialog; add turns switching on; change/remove; other-apps "
+                 "default; disconnected display kept; failed save stays open; cancel never saves\n";
+    return ok;
+}
+
+// Drives the real modal dialog opened by show_application_rules().
+constexpr UINT_PTR kModalAutomationTimer = 0x7001;
+struct ModalAutomation {
+    HWND owner = nullptr;
+    bool toggle = false;
+    UINT button = IDOK;
+    bool done = false;
 };
+ModalAutomation* modal_automation = nullptr;
 
-BOOL CALLBACK submit_settings_window(HWND window, LPARAM parameter) {
-    auto& automation = *reinterpret_cast<SettingsAutomation*>(parameter);
-    if (GetWindow(window, GW_OWNER) != automation.rules_dialog ||
-        !GetDlgItem(window, IDC_APP_FILTER_VALUE_BASE)) return TRUE;
-    // This is a dialog belonging to this fixture and thread, not another app.
-    ShowWindow(window, SW_HIDE);
-    const wchar_t* values[] = {L"1.90", L"0", L"1", L"1", L"1", L"1"};
-    for (int index = 0; index < 6; ++index) {
-        SetDlgItemTextW(window, IDC_APP_FILTER_VALUE_BASE + index, values[index]);
-    }
-    automation.submitted = true;
-    SendMessageW(window, WM_COMMAND, IDOK, 0);
-    return FALSE;
+void CALLBACK drive_modal(HWND window, UINT, UINT_PTR timer, DWORD) {
+    if (!modal_automation) return;
+    EnumThreadWindows(GetCurrentThreadId(), [](HWND candidate, LPARAM) -> BOOL {
+        if (GetWindow(candidate, GW_OWNER) != modal_automation->owner ||
+            !GetDlgItem(candidate, IDC_APP_AUTO_SWITCH)) {
+            return TRUE;
+        }
+        ShowWindow(candidate, SW_HIDE);  // this fixture's own dialog
+        if (modal_automation->toggle) {
+            SendDlgItemMessageW(candidate, IDC_APP_AUTO_SWITCH, BM_CLICK, 0, 0);
+        }
+        SendMessageW(candidate, WM_COMMAND, modal_automation->button, 0);
+        modal_automation->done = true;
+        return FALSE;
+    }, 0);
+    if (modal_automation->done) KillTimer(window, timer);
 }
 
-void CALLBACK submit_settings_timer(HWND window, UINT, UINT_PTR timer, DWORD) {
-    auto* automation = reinterpret_cast<SettingsAutomation*>(
-        GetPropW(window, kSettingsAutomationProperty));
-    if (!automation) return;
-    EnumThreadWindows(GetCurrentThreadId(), submit_settings_window,
-                      reinterpret_cast<LPARAM>(automation));
-    if (automation->submitted) KillTimer(window, timer);
-}
-
-bool check_rule_dialog_changes(const std::filesystem::path& root) {
+bool check_profiles_dialog_commit(const std::filesystem::path& root) {
     WNDCLASSW owner_class{};
     owner_class.lpfnWndProc = DefWindowProcW;
     owner_class.hInstance = GetModuleHandleW(nullptr);
-    owner_class.lpszClassName = L"GammaChangerRuleRegressionOwner";
+    owner_class.lpszClassName = L"GammaChangerAppProfilesOwner";
     if (!RegisterClassW(&owner_class)) return false;
     bool ok = true;
-    // Re-enable an existing disabled rule, both cancel and save. Then exercise
-    // the real Edit settings -> modal editor -> Save/Cancel path for enabled
-    // and disabled rules, including copy-on-write of a shared library filter.
-    for (int step = 0; step < 5; ++step) {
-        const bool editing = step >= 2;
-        const bool enabled_rule = step == 2 || step == 3;
-        const bool save = step == 1 || step == 3 || step == 4;
+    for (const UINT button : {static_cast<UINT>(IDCANCEL), static_cast<UINT>(IDOK)}) {
         FakeBackend backend;
-        GuiState gui(root / std::to_wstring(step), backend);
+        GuiState gui(root / std::to_wstring(button), backend);
         DisplayInfo display;
         display.device_name = L"FAKE-DISPLAY";
         display.stable_id = L"fake-screen";
         gui.displays.push_back(display);
-        CalibrationSettings original;
-        original.gamma = 1.20;
-        gui.profiles = {{L"common", L"Common", original, true}};
-        gui.auto_switch_paused = true;
+        gui.profiles = {{L"common", L"Common", default_params(), true}};
         gui.app_profile_config.rules = {
-            {L"C:\\Apps\\Browser.exe", display.stable_id, L"common", enabled_rule,
-             L"existing-rule", L"Browser filter"},
-        };
-        if (editing) {
-            gui.app_profile_config.rules.insert(gui.app_profile_config.rules.begin(),
-                {L"C:\\Apps\\Browser.exe", display.stable_id, L"common", true,
-                 L"priority-rule", L"Previously selected filter"});
-        }
-        std::wstring error;
-        if (!gui.profile_manager.replace_profiles(gui.profiles, error) ||
-            !gui.store.save_app_profile_config(gui.app_profile_config, error)) {
-            std::wcerr << L"FAIL: rule fixture persistence: " << error << L'\n';
-            ok = false;
-            break;
-        }
-        gui.window = CreateWindowExW(0, owner_class.lpszClassName, L"Hidden rule regression owner",
-                                      WS_OVERLAPPED, 0, 0, 100, 100, nullptr, nullptr,
-                                      owner_class.hInstance, nullptr);
+            {L"C:\\Apps\\Browser.exe", display.stable_id, L"common", true, L"rule-1", L""}};
+        gui.auto_switch_paused = true;
+        gui.window = CreateWindowExW(0, owner_class.lpszClassName, L"Owner", WS_OVERLAPPED, 0, 0,
+                                     100, 100, nullptr, nullptr, owner_class.hInstance, nullptr);
         if (!gui.window) { ok = false; break; }
-        RulesDialogState draft{gui, gui.app_profile_config, gui.profiles};
-        HWND dialog = CreateDialogParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_APP_RULES),
-                                          gui.window, rules_dialog_proc,
-                                          reinterpret_cast<LPARAM>(&draft));
-        if (!dialog) {
-            DestroyWindow(gui.window);
-            ok = false;
-            break;
-        }
-        HWND list = GetDlgItem(dialog, IDC_APP_RULE_LIST);
-        ok &= ListView_GetItemCount(list) == (editing ? 2 : 1) &&
-              !draft.resume_on_save && !draft.config.enabled;
-        if (editing) {
-            fill_rule_list(dialog, draft, L"existing-rule");
-            ok &= ListView_GetNextItem(list, -1, LVNI_SELECTED) == 1;
-            SettingsAutomation automation{dialog};
-            if (!SetPropW(dialog, kSettingsAutomationProperty,
-                          reinterpret_cast<HANDLE>(&automation)) ||
-                !SetTimer(dialog, kSettingsAutomationTimer, 10, submit_settings_timer)) {
-                ok = false;
-            } else {
-                SendMessageW(dialog, WM_COMMAND, IDC_EDIT_FILTER_SETTINGS, 0);
-                ok &= automation.submitted && draft.profiles_changed;
-            }
-            KillTimer(dialog, kSettingsAutomationTimer);
-            RemovePropW(dialog, kSettingsAutomationProperty);
-            ok &= draft.resume_on_save == enabled_rule && draft.config.enabled == enabled_rule;
-            const auto* edited_rule = find_app_profile_rule_by_id(draft.config, L"existing-rule");
-            const auto* edited_profile = edited_rule
-                ? profile_by_id(draft.profiles, edited_rule->profile_id) : nullptr;
-            ok &= edited_profile && edited_profile->settings.gamma == 1.90 &&
-                  edited_profile->id != L"common" &&
-                  profile_by_id(draft.profiles, L"common")->settings.gamma == original.gamma;
-        } else {
-            ListView_SetCheckState(list, 0, TRUE);
-            ok &= draft.resume_on_save && draft.config.enabled && draft.config.rules[0].enabled;
-        }
-        // Native control changes are draft-only until the outer Save button.
-        ok &= !gui.app_profile_config.enabled && gui.auto_switch_paused && backend.writes == 0;
-        SendMessageW(dialog, WM_COMMAND, save ? IDOK : IDCANCEL, 0);
+        ModalAutomation automation{gui.window, true, button};
+        modal_automation = &automation;
+        SetTimer(gui.window, kModalAutomationTimer, 10, drive_modal);
+        show_application_rules(gui);
+        KillTimer(gui.window, kModalAutomationTimer);
+        modal_automation = nullptr;
+        const bool saved = button == IDOK;
         const auto persisted = gui.store.load_app_profile_config();
-        const auto* persisted_rule = find_app_profile_rule_by_id(persisted, L"existing-rule");
-        const bool activates = save && (!editing || enabled_rule);
-        ok &= gui.app_profile_config.enabled == activates && persisted.enabled == activates &&
-              gui.auto_switch_paused != activates && persisted_rule && backend.writes == 0;
-        if (editing) {
-            ok &= !persisted.rules.empty() &&
-                  persisted.rules.front().id == (activates ? L"existing-rule" : L"priority-rule");
-            // Inspect the preserved priority independently of global Off.
-            auto priority_probe = persisted;
-            priority_probe.enabled = true;
-            const auto* resolved = find_app_profile_rule(priority_probe,
-                L"C:\\Apps\\Browser.exe", display.stable_id);
-            ok &= resolved && resolved->id == (activates ? L"existing-rule" : L"priority-rule");
-        }
-        if (persisted_rule) {
-            ok &= persisted_rule->enabled == (save && !editing ? true : enabled_rule);
-            std::vector<Profile> saved_profiles;
-            ok &= gui.store.load_profiles(saved_profiles) == ProfileLoadStatus::loaded;
-            const auto* saved_profile = profile_by_id(saved_profiles, persisted_rule->profile_id);
-            ok &= saved_profile && saved_profile->settings.gamma == (save && editing ? 1.90 : original.gamma);
-        }
-        if (activates) {
-            const auto* resolved = find_app_profile_rule(gui.app_profile_config,
-                L"C:\\Apps\\Browser.exe", display.stable_id);
-            ok &= resolved && resolved->id == L"existing-rule";
-            apply_application_profiles(gui, L"C:\\Apps\\Browser.exe", true);
-            CalibrationSettings expected = original;
-            if (editing) expected.gamma = 1.90;
-            ok &= backend.current.channel == build_ramp(expected).channel;
-        }
+        ok &= automation.done && gui.app_profile_config.enabled == saved &&
+              gui.auto_switch_paused != saved && persisted.enabled == saved &&
+              backend.writes == 0;
         gui.foreground_watcher.stop();
-        if (IsWindow(dialog)) DestroyWindow(dialog);
+        KillTimer(gui.window, kForegroundProfileTimer);
         DestroyWindow(gui.window);
     }
     UnregisterClassW(owner_class.lpszClassName, owner_class.hInstance);
     std::cout << (ok ? "PASS" : "FAIL")
-              << ": existing-disabled rule checkbox/save enables and resumes; cancel preserves state; "
-                 "native Edit settings/Save promotes the non-default enabled filter; "
-                 "cancel and disabled edits preserve priority/global Off\n";
+              << ": modal app-profiles dialog; turning switching on and saving persists and "
+                 "resumes; cancel changes nothing; no display writes\n";
     return ok;
 }
 
@@ -439,10 +448,12 @@ int main() {
         std::cerr << "FAIL: cannot initialize isolated fixture directory\n";
         return 1;
     }
+    INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES};
+    if (!InitCommonControlsEx(&controls)) return 1;
     bool ok = check_application_switching(data / L"assignments");
-    ok = check_default_dialog(data / L"defaults") && ok;
-    ok = check_running_picker() && ok;
-    ok = check_rule_dialog_changes(data / L"rules") && ok;
+    ok = check_assign_dialog() && ok;
+    ok = check_profiles_dialog() && ok;
+    ok = check_profiles_dialog_commit(data / L"dialog") && ok;
     ok = check_schedule(data) && ok;
     std::error_code cleanup_error;
     std::filesystem::remove_all(data, cleanup_error);

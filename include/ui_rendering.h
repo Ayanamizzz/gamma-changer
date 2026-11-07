@@ -57,4 +57,32 @@ void draw_layered_panel(HDC dc, const RECT& rect, COLORREF fill, BYTE opacity,
                         COLORREF border, int radius);
 void draw_separator(HDC dc, int left, int top, int right, COLORREF color);
 
+// ---------------------------------------------------------------------------
+// Antialiased primitives (GDI+ under the hood; text stays GDI/ClearType).
+// Coordinates are device pixels on `dc`; `alpha` is 0..255.
+// ---------------------------------------------------------------------------
+void aa_fill_round_rect(HDC dc, const RECT& rect, float radius, COLORREF color,
+                        BYTE alpha = 255);
+void aa_stroke_round_rect(HDC dc, const RECT& rect, float radius, COLORREF color,
+                          float width = 1.0f, BYTE alpha = 255);
+void aa_fill_ellipse(HDC dc, float cx, float cy, float radius, COLORREF color,
+                     BYTE alpha = 255);
+void aa_stroke_ellipse(HDC dc, float cx, float cy, float radius, COLORREF color,
+                       float width, BYTE alpha = 255);
+void aa_line(HDC dc, float x1, float y1, float x2, float y2, COLORREF color, float width,
+             BYTE alpha = 255, bool dashed = false);
+
+struct CurvePoint {
+    float x;
+    float y;
+};
+// Polyline; when `fill_to_y` is set the area between the curve and that
+// baseline is filled with `fill_alpha` of the same color first.
+void aa_curve(HDC dc, const CurvePoint* points, int count, COLORREF color, float width,
+              int fill_to_y = -1, BYTE fill_alpha = 0);
+
+void draw_chevron_down(HDC dc, int cx, int cy, int half_width, COLORREF color);
+void draw_plus_icon(HDC dc, int cx, int cy, int half_size, COLORREF color);
+void draw_refresh_icon(HDC dc, int cx, int cy, int radius, COLORREF color);
+
 }  // namespace gamma_changer::ui

@@ -120,39 +120,85 @@ std::wstring bind_app_profile_rule(AppProfileConfig& config, AppProfileRule rule
     return id;
 }
 
-bool update_app_filter_settings(AppProfileConfig& config, std::vector<Profile>& profiles,
-                                const std::wstring& rule_id,
-                                const CalibrationSettings& settings) {
-    auto* rule = find_app_profile_rule_by_id(config, rule_id);
-    if (!rule) return false;
-    const auto current = std::find_if(profiles.begin(), profiles.end(),
-                                     [&](const Profile& profile) { return profile.id == rule->profile_id; });
-    if (current == profiles.end()) return false;
-    const bool shared = std::count_if(config.rules.begin(), config.rules.end(),
-                                     [&](const AppProfileRule& item) {
-        return item.profile_id == current->id;
-    }) > 1 || std::any_of(config.fallback_profiles.begin(), config.fallback_profiles.end(),
-                          [&](const DisplayProfilePreference& item) { return item.profile_id == current->id; });
-    if (current->id.rfind(L"app-filter-", 0) == 0 && !shared) {
-        current->settings = settings;
-        return true;
-    }
+namespace {
 
-    Profile copy = *current;
-    for (std::size_t number = 1;; ++number) {
-        copy.id = L"app-filter-" + std::to_wstring(number);
-        const bool used = std::any_of(profiles.begin(), profiles.end(),
-                                     [&](const Profile& profile) { return profile.id == copy.id; });
-        if (!used) break;
+bool same_app_on_display(const AppProfileRule& rule, const std::wstring& normalized_path,
+                         const std::wstring& display_id) {
+    return rule.display_id == display_id &&
+           normalize_executable_path(rule.executable_path) == normalized_path;
+}
+
+}  // namespace
+
+std::vector<AppAssignment> app_assignments(const AppProfileConfig& config,
+                                           const std::wstring& display_id) {
+    std::vector<AppAssignment> assignments;
+    std::vector<std::wstring> seen;
+    for (const auto& rule : config.rules) {
+        if (rule.display_id != display_id) continue;
+        const std::wstring path = normalize_executable_path(rule.executable_path);
+        if (std::find(seen.begin(), seen.end(), path) != seen.end()) continue;
+        seen.push_back(path);
+        const auto winner = std::find_if(config.rules.begin(), config.rules.end(),
+                                         [&](const AppProfileRule& item) {
+            return item.enabled && same_app_on_display(item, path, display_id);
+        });
+        if (winner != config.rules.end()) {
+            assignments.push_back({winner->executable_path, winner->profile_id, true});
+        } else {
+            assignments.push_back({rule.executable_path, rule.profile_id, false});
+        }
     }
-    const auto separator = rule->executable_path.find_last_of(L"\\/");
-    const std::wstring executable = separator == std::wstring::npos ? rule->executable_path
-        : rule->executable_path.substr(separator + 1);
-    copy.name = executable + L" - " + (rule->name.empty() ? current->name : rule->name);
-    copy.settings = settings;
-    rule->profile_id = copy.id;
-    profiles.push_back(std::move(copy));
-    return true;
+    return assignments;
+}
+
+void assign_app_profile(AppProfileConfig& config, const std::wstring& executable_path,
+                        const std::wstring& display_id, const std::wstring& profile_id) {
+    const std::wstring path = normalize_executable_path(executable_path);
+    auto winner = std::find_if(config.rules.begin(), config.rules.end(),
+                               [&](const AppProfileRule& rule) {
+        return rule.enabled && same_app_on_display(rule, path, display_id);
+    });
+    if (winner == config.rules.end()) {
+        winner = std::find_if(config.rules.begin(), config.rules.end(),
+                              [&](const AppProfileRule& rule) {
+            return same_app_on_display(rule, path, display_id);
+        });
+    }
+    if (winner == config.rules.end()) {
+        set_app_profile_rule(config, {executable_path, display_id, profile_id, true});
+        return;
+    }
+    const std::wstring kept_id = winner->id;
+    if (winner->profile_id != profile_id) winner->name.clear();  // name described the old profile
+    winner->executable_path = executable_path;
+    winner->profile_id = profile_id;
+    winner->enabled = true;
+    config.rules.erase(std::remove_if(config.rules.begin(), config.rules.end(),
+                                      [&](const AppProfileRule& rule) {
+        return rule.id != kept_id && same_app_on_display(rule, path, display_id);
+    }), config.rules.end());
+}
+
+bool unassign_app_profile(AppProfileConfig& config, const std::wstring& executable_path,
+                          const std::wstring& display_id) {
+    const std::wstring path = normalize_executable_path(executable_path);
+    const std::size_t before = config.rules.size();
+    config.rules.erase(std::remove_if(config.rules.begin(), config.rules.end(),
+                                      [&](const AppProfileRule& rule) {
+        return same_app_on_display(rule, path, display_id);
+    }), config.rules.end());
+    return config.rules.size() != before;
+}
+
+std::vector<std::wstring> app_profile_display_ids(const AppProfileConfig& config) {
+    std::vector<std::wstring> ids;
+    const auto add = [&](const std::wstring& id) {
+        if (std::find(ids.begin(), ids.end(), id) == ids.end()) ids.push_back(id);
+    };
+    for (const auto& rule : config.rules) add(rule.display_id);
+    for (const auto& preference : config.fallback_profiles) add(preference.display_id);
+    return ids;
 }
 
 std::size_t remove_app_profile_rules_for_profile(AppProfileConfig& config,

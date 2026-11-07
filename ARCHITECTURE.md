@@ -1,6 +1,6 @@
 # Gamma Changer 架构与重构说明
 
-最后更新：2026-11-07（分支 `refactor/architecture-review`，基于 2.6.1 / `0069e2e`）
+最后更新：2026-11-07（2.6.2 之后：应用配置交互简化与界面重做，见 §8）
 
 本文档是项目的**架构基准**：说明系统应该长什么样、哪些不变量不能破坏、这一轮做了什么、
 还欠了哪些债以及偿还顺序。历史审计见 `Gamma-Changer-Optimization-Audit.md`。
@@ -18,7 +18,7 @@ Gamma Changer 的业务内核很小：**把一组校准参数变成 LUT，写到
 | # | 问题 | 后果 | 本轮 |
 |---|---|---|---|
 | A1 | **LUT 有两个写入者**。`CalibrationController` 管预览/提交，但按应用自动切换的逻辑写在 UI 文件 `app_profiles.cpp` 里，直接调用 `ramp_backend.write/read` | 预览/提交/运行时三种状态的互斥只能靠调用顺序“碰巧正确”；自动切换无法脱离窗口单测 | ✅ 已修 |
-| A2 | **领域逻辑住在表现层**。自动切换的决策（规则→回退→桌面）、桌面快照生命周期、去重都和 `set_status`/`HWND` 混在一起 | 测试只能 `#include "ui/app_profiles.cpp"` 来覆盖 | ✅ 引擎已抽离；对话框测试仍包含 .cpp（见 §5） |
+| A2 | **领域逻辑住在表现层**。自动切换的决策（规则→回退→桌面）、桌面快照生命周期、去重都和 `set_status`/`HWND` 混在一起 | 测试只能 `#include "ui/app_profiles.cpp"` 来覆盖 | ✅ 引擎与对话框均已抽离，测试不再包含 .cpp（见 §8） |
 | A3 | **显示器身份不一致**。全系统用 `display_storage_id()`（稳定路径）做键，唯独 controller 的预览用 `device_name`（`\\.\DISPLAYn`） | 拔掉另一块屏导致编号重排后，预览无法被取消（“belongs to a different display”） | ✅ 已修 + 回归测试 |
 | A4 | **滑块量化用截断**：`static_cast<int>(v * 100.0)` | 1.15 → 114 → 读回 1.14；加载 profile 后下一次自动保存会把漂移值写盘 | ✅ 已修 + 回归测试 |
 | A5 | **持久化样板复制 6 份**（临时文件 → flush → MoveFileEx → 清理），各自略有差异 | 改一处漏五处；`profiles.v1` “存在但打不开”被当成 missing，会触发迁移覆盖用户文件 | ✅ 抽成 `file_io`，并修正 missing/corrupt 判定 |
@@ -41,17 +41,19 @@ Gamma Changer 的业务内核很小：**把一组校准参数变成 LUT，写到
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
-│ gamma_changer_gui (exe)   src/main.cpp + src/ui/app_profiles  │
+│ gamma_changer_gui (exe)   src/main.cpp + 资源                 │
 ├──────────────────────────────────────────────────────────────┤
 │ gamma_ui (static lib)  —  Win32 表现层                        │
 │   main_window  消息 → 用例调用                                 │
 │   application  手动校准用例（暂居此处，见 R2）                   │
-│   controls / layout / painting / profile_list / tray          │
+│   app_profiles 侧栏/对话框 ↔ AppProfileRuntime 的胶水           │
+│   app_dialogs  两个应用配置对话框（只操作草稿，可脱离窗口测试）     │
+│   layout(ui_geometry) / painting / controls / profile_list    │
 ├──────────────────────────────────────────────────────────────┤
 │ gamma_core (static lib)  —  领域 + 应用服务，无窗口/GDI         │
 │   CalibrationController   LUT 唯一写入者                       │
 │   AppProfileRuntime       按应用切换引擎（无 HWND）              │
-│   app_profile_rules       规则匹配/绑定/模板复制（纯函数）        │
+│   app_profile_rules       规则匹配 + “应用→profile”视图（纯函数） │
 │   ProfileManager          profile 集合与旧四槽迁移              │
 │   ProfileStore → file_io  文件格式 / 原子写入                   │
 │   gamma_lut               参数校验与 LUT 生成（纯函数）           │
@@ -186,11 +188,10 @@ working_settings ──edit──▶ dirty
 同时合并“profile 库可写 / 只读”两套分支：只读模式只是“提交不更新 profile 定义”。
 `ProfileService` 作为 `profiles.v1` 与 `presets.profile` 的唯一写入者（旧审计计划项）。
 
-### R3 — 拆分 `app_profiles.cpp`（中收益，低风险）
+### R3 — 拆分 `app_profiles.cpp` ✅ 已完成（见 §8）
 
-按对话框拆为 `running_app_picker.cpp`、`rule_editor_dialog.cpp`、`rules_dialog.cpp`、
-`auto_switch_controller.cpp`；对话框状态结构与过程函数通过 `ui/app_profile_dialogs.h` 暴露。
-完成后 `foreground_profile_check` 不再 `#include` .cpp，`app_profiles.cpp` 回到 `gamma_ui`。
+对话框移入 `ui/app_dialogs.{h,cpp}`，`foreground_profile_check` 不再 `#include` .cpp，
+`app_profiles.cpp` 回到 `gamma_ui`。
 
 ### R4 — 状态事件化（低收益，低风险，可随 R1/R2 顺带）
 
@@ -229,7 +230,10 @@ ctest --preset release
    `app_profile_rules_check`、`app_profile_runtime_check`。
 2. 持久化集成测试（临时目录）—— `core_safety_check`、`profile_migration_check`。
 3. 事务测试（假 `DisplayRampBackend`）—— `calibration_transaction_check`、`app_profile_runtime_check`。
-4. 消息级 GUI 冒烟（真实对话框，假后端）—— `foreground_profile_check`。不做像素测试。
+4. 消息级 GUI 冒烟（真实对话框，假后端）—— `foreground_profile_check`。不做像素断言。
+5. 目视回归：`gamma_ui_snapshot <输出目录>` 在屏幕外渲染真实主窗口与两个对话框并保存 PNG
+   （临时数据目录、假 LUT 后端、样例应用列表；不读写用户配置、不改显示器、不占单实例锁）。
+   改界面后对比截图。
 
 ## 7. 发布工程
 
@@ -237,3 +241,58 @@ ctest --preset release
 - 发布流程见 `.github/workflows/release.yml` 与 `scripts/sign-release.ps1`。
 - 待办：clang-format、ASan Debug 任务；exe 尚无 `VERSIONINFO` 资源（版本只在
   `app_version.h`），资源管理器“属性→详细信息”看不到版本号。
+
+---
+
+## 8. 应用配置交互与界面（2026-11-07）
+
+### 8.1 问题
+
+“某个软件在前台时用某个 profile”本是一句话的需求，2.6.2 却把它做成了 4 层嵌套对话框
+（规则管理 → 运行程序选择 → 规则编辑 → 参数编辑），并把实现细节暴露给用户：
+同一软件多条规则、上移/下移优先级、“Set as default”、逐条启用勾选、规则名、
+“Edit settings” 背后复制出隐藏的 `app-filter-N` profile。侧栏另有 `Bind app…`、
+`App rules…`、`Auto-switch` 三个入口，暂停状态的按钮文字还会变成 “Resume auto-switch”。
+
+### 8.2 新模型
+
+用户只需要理解三件事：
+
+| 概念 | 界面 |
+|---|---|
+| 开关 | 侧栏 “Switch automatically” 开关：紫=开，灰=关，琥珀=手动操作后暂停（点开关恢复） |
+| 每个显示器上：应用 → profile | “Manage apps…” 窗口里的一张两列表：App / Profile；Add / Change / Remove |
+| 其他应用 | 同一窗口底部 “Other apps use”：桌面校准（不变）或任一已保存 profile |
+
+- **两个对话框，最多一层嵌套**：`IDD_APP_PROFILES`（管理）和 `IDD_APP_ASSIGN`
+  （选应用 + 选 profile，一步完成）。右键 profile 的 “Use for an app…” 直接打开后者并立即保存。
+- **一个保存边界**：管理窗口里的所有修改只改草稿，Save 一次性持久化，Cancel 无副作用。
+  保存失败时窗口保持打开并显示原因。
+- **可见的副作用**：添加应用会勾上 “Switch profiles automatically”——用户在点 Save
+  之前就能看到；保存时开关为开则清除暂停。除此之外保存不改变任何模式。
+- **单显示器时隐藏 Display 选择器**；断开的显示器仍可选，配置不丢。
+- 删除的概念：多规则优先级、规则名编辑、逐条启用、Set as default、按应用改参数
+  （改 profile 本身即可）。对应的核心函数 `update_app_filter_settings` 已删除。
+
+### 8.3 兼容旧配置
+
+文件格式不变（`app_rules.v1` v2/v3）。核心新增纯函数：
+
+- `app_assignments(config, display)`：每个应用一行，显示**实际生效**的那条规则
+  （第一条启用的；若全部禁用则显示第一条并标 “(off)”）。
+- `assign_app_profile(...)`：保留生效规则的 id 并改其 profile；同一应用/显示器的其余旧规则
+  在用户**显式编辑该应用**时合并掉。未编辑的应用原样保留。从不修改 `config.enabled`。
+- `unassign_app_profile(...)`、`app_profile_display_ids(...)`。
+
+### 8.4 界面结构
+
+- **几何单一来源**：`ui_geometry(gui)` 返回所有区域（profile 列表视口、卡片、曲线区、
+  每个调节行的标签/滑块/输入框、页脚）。布局、绘制、滚轮命中、滚动到可见都读它；
+  以前 profile 列表位置在 4 个文件里各算一遍（`scale(252) + scale(18) + …`）。
+- **profile 列表高度自适应**：不再固定 4 行。
+- **单一场景绘制**：`render_scene()` 同时服务 `WM_PAINT` 与子控件的“画我背后的东西”
+  （`paint_parent_layer`），所以卡片能正确出现在滑块、按钮、下拉框背后。
+- **抗锯齿**：圆角、曲线、滑块、开关、图标经 `ui::aa_*`（GDI+，只在 `ui_rendering.cpp`
+  内引入）；文字仍用 GDI ClearType。
+- **设计令牌**：`ui_theme.h` 的颜色/尺寸；一个强调色；Segoe UI Variable（可用时）。
+- 侧栏显示器下拉框自绘为深色字段（原生白色下拉框与深色侧栏冲突）；数值输入框垂直居中。

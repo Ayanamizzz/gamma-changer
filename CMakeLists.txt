@@ -41,11 +41,11 @@ target_link_libraries(gamma_core PUBLIC user32 gdi32 shell32 advapi32 dwmapi)
 
 # ---------------------------------------------------------------------------
 # gamma_ui: the Win32 presentation layer.
-# src/ui/app_profiles.cpp is intentionally *not* part of this library: the GUI
-# regression fixture compiles it directly to reach its dialog internals.
 # ---------------------------------------------------------------------------
 add_library(gamma_ui STATIC
     src/application.cpp
+    src/ui/app_dialogs.cpp
+    src/ui/app_profiles.cpp
     src/ui_rendering.cpp
     src/ui/controls.cpp
     src/ui/layout.cpp
@@ -56,16 +56,20 @@ add_library(gamma_ui STATIC
 )
 target_include_directories(gamma_ui PUBLIC src)
 target_link_libraries(gamma_ui PUBLIC gamma_core
-    comctl32 uxtheme windowscodecs ole32 msimg32 uuid)
+    comctl32 uxtheme windowscodecs ole32 msimg32 uuid gdiplus)
 
 set(gamma_resources src/app.rc src/wallpaper.rc)
 
 add_executable(gamma_changer_gui WIN32
     src/main.cpp
-    src/ui/app_profiles.cpp
     ${gamma_resources}
 )
 target_link_libraries(gamma_changer_gui PRIVATE gamma_ui)
+
+# Developer tool: off-screen PNG snapshots of the real UI with sample data and a
+# fake gamma backend. Not part of the release package.
+add_executable(gamma_ui_snapshot src/tools/ui_snapshot.cpp ${gamma_resources})
+target_link_libraries(gamma_ui_snapshot PRIVATE gamma_ui)
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -82,7 +86,7 @@ gamma_core_test(calibration_transaction_check)
 gamma_core_test(app_profile_rules_check)
 gamma_core_test(app_profile_runtime_check)
 
-# Includes src/ui/app_profiles.cpp and drives the real dialogs (resources needed).
+# Drives the real dialogs and window procedure (resources needed).
 add_executable(foreground_profile_check src/foreground_profile_check.cpp ${gamma_resources})
 target_link_libraries(foreground_profile_check PRIVATE gamma_ui)
 add_test(NAME foreground_profile_check COMMAND foreground_profile_check)
@@ -92,4 +96,5 @@ if (MSVC)
     # app.rc provides the DPI/Common Controls manifest as a single embedded resource.
     target_link_options(gamma_changer_gui PRIVATE /MANIFEST:NO)
     target_link_options(foreground_profile_check PRIVATE /MANIFEST:NO)
+    target_link_options(gamma_ui_snapshot PRIVATE /MANIFEST:NO)
 endif()

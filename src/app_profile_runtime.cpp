@@ -15,7 +15,7 @@ const Profile* saved_profile(const std::vector<Profile>& profiles, const std::ws
 }
 
 std::wstring resolution_label(const AppProfileResolution& resolution) {
-    if (resolution.is_fallback()) return L"Default: " + resolution.profile->name;
+    if (resolution.is_fallback()) return resolution.profile->name + L" (other apps)";
     return resolution.rule->name.empty() ? resolution.profile->name : resolution.rule->name;
 }
 

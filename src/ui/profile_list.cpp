@@ -34,6 +34,13 @@ LRESULT CALLBACK profile_proc(HWND item, UINT message, WPARAM wparam, LPARAM lpa
         gui->profile_keyboard_focus = true;
         InvalidateRect(item, nullptr, FALSE);
     }
+    if (message == WM_KEYDOWN && wparam == VK_DELETE && gui) {
+        const int index = GetDlgCtrlID(item) - kProfileIdBase;
+        if (index >= 0 && index < static_cast<int>(gui->profiles.size())) {
+            delete_preset(*gui, static_cast<std::size_t>(index));
+            return 0;
+        }
+    }
     if (message == WM_CONTEXTMENU && gui) {
         const int index = GetDlgCtrlID(item) - kProfileIdBase;
         if (index >= 0 && index < static_cast<int>(gui->profiles.size())) {
@@ -80,12 +87,7 @@ void refresh_preset_buttons(GuiState& gui) {
         SetWindowTextW(gui.preset_buttons[i], text.c_str());
         invalidate_control_background(gui, gui.preset_buttons[i], 0);
     }
-    const bool can_create = gui.profile_store_available;
-    const bool can_delete = gui.profile_store_available &&
-                            gui.active_preset < gui.profiles.size() &&
-                            gui.profiles[gui.active_preset].id != kBuiltinProfileId;
-    EnableWindow(gui.preset_save, can_create ? TRUE : FALSE);
-    EnableWindow(gui.preset_delete, can_delete ? TRUE : FALSE);
+    EnableWindow(gui.preset_save, gui.profile_store_available ? TRUE : FALSE);
     update_automatic_profile_controls(gui);
 }
 
@@ -376,16 +378,10 @@ void delete_active_preset(GuiState& gui) {
 
 void scroll_profile_into_view(GuiState& gui, std::size_t index) {
     if (index >= gui.profiles.size()) return;
-    const UINT dpi = gui.window ? GetDpiForWindow(gui.window) : 96;
-    const auto scale = [dpi](int value) { return MulDiv(value, static_cast<int>(dpi), 96); };
-    const int row_height = scale(ui::Metrics::profile_row_height);
-    const int row_stride = row_height + scale(ui::Metrics::profile_row_gap);
-    const int profile_first_y = scale(252) + scale(18) + scale(ui::Metrics::profile_title_gap);
-    const int list_bottom = profile_first_y + kProfileVisibleRows * row_height +
-                            (kProfileVisibleRows - 1) * scale(ui::Metrics::profile_row_gap);
-    gui.profile_scroll_offset =
-        profile_scroll_to_show(index, gui.profiles.size(), gui.profile_scroll_offset,
-                               profile_first_y, list_bottom, row_stride, row_height);
+    const UiGeometry g = ui_geometry(gui);
+    gui.profile_scroll_offset = profile_scroll_to_show(
+        index, gui.profiles.size(), gui.profile_scroll_offset, g.profile_list.top,
+        g.profile_list.bottom, g.profile_row_stride, g.profile_row_height);
     layout_controls_for_current_size(gui);
 }
 

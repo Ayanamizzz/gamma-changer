@@ -49,11 +49,35 @@ void set_app_profile_rule(AppProfileConfig& config, AppProfileRule rule);
 std::wstring bind_app_profile_rule(AppProfileConfig& config, AppProfileRule rule);
 bool select_app_profile_rule(AppProfileConfig& config, const std::wstring& rule_id);
 
-// Application filters share library templates until their first edit. Copies
-// are created only when needed to keep other applications' settings unchanged.
-bool update_app_filter_settings(AppProfileConfig& config, std::vector<Profile>& profiles,
-                                const std::wstring& rule_id,
-                                const CalibrationSettings& settings);
+// ---------------------------------------------------------------------------
+// Simplified assignment view used by the UI: "on this display, this app uses
+// this profile". The rule list can still hold several rules for one app and
+// display (older versions allowed that); the view shows the one that actually
+// wins, and editing an app collapses its group back to that single rule.
+// ---------------------------------------------------------------------------
+struct AppAssignment {
+    std::wstring executable_path;
+    std::wstring profile_id;
+    // False only for legacy groups whose rules are all disabled: listed, but
+    // currently inactive until the user assigns a profile again.
+    bool enabled = true;
+};
+
+// One entry per executable on `display_id`, in rule order.
+std::vector<AppAssignment> app_assignments(const AppProfileConfig& config,
+                                           const std::wstring& display_id);
+// Makes the app use `profile_id` on `display_id`: updates (and keeps the id of)
+// the winning rule, or adds a rule. Other rules for the same app/display are
+// removed. Never changes `config.enabled`.
+void assign_app_profile(AppProfileConfig& config, const std::wstring& executable_path,
+                        const std::wstring& display_id, const std::wstring& profile_id);
+// Removes every rule for the app on `display_id`.
+bool unassign_app_profile(AppProfileConfig& config, const std::wstring& executable_path,
+                          const std::wstring& display_id);
+// Every display id referenced by a rule or an unassigned-app default, so the UI
+// can still offer displays that are currently disconnected.
+std::vector<std::wstring> app_profile_display_ids(const AppProfileConfig& config);
+
 // Remove both software bindings and unassigned-app defaults referencing a profile.
 std::size_t remove_app_profile_rules_for_profile(AppProfileConfig& config,
                                                 const std::wstring& profile_id);
