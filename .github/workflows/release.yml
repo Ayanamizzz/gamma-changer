@@ -61,7 +61,7 @@ jobs:
           Copy-Item -LiteralPath (Join-Path $staging "SHA256SUMS.txt") `
               -Destination $env:RUNNER_TEMP -Force
 
-      - name: Create draft release
+      - name: Publish release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -104,14 +104,15 @@ jobs:
               --repo $env:GITHUB_REPOSITORY `
               --title "Gamma Changer $tag" `
               --notes-file $notes `
-              --draft
-            if ($LASTEXITCODE -ne 0) { throw "Draft release update failed." }
+              --draft=false `
+              --latest
+            if ($LASTEXITCODE -ne 0) { throw "Release publication failed." }
           } else {
             gh release create $tag `
               --repo $env:GITHUB_REPOSITORY `
-              --draft `
+              --latest `
               --title "Gamma Changer $tag" `
               --notes-file $notes `
               $assets
-            if ($LASTEXITCODE -ne 0) { throw "Draft release creation failed." }
+            if ($LASTEXITCODE -ne 0) { throw "Release creation failed." }
           }

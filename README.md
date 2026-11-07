@@ -4,7 +4,7 @@ Gamma Changer is a native Windows desktop utility for adjusting the software gam
 each connected display. It provides a modern, high-DPI Win32 interface with per-monitor
 settings, a scrollable profile list, direct numeric input, and a live tone-response preview.
 
-Current release version: **2.6.1**
+Current release version: **2.6.2**
 
 ## Features
 
@@ -171,7 +171,7 @@ selected while it remains connected.
 The [sidebar interaction proposal](docs/design/sidebar-interaction-proposal.md) describes
 a future neutral-gray interface, a single application-settings entry, and recognition
 assistance that waits for the user to apply a suggested filter. These are design proposals,
-not features implemented in 2.6.1. This release retains the existing automatic-switching
+not features implemented in 2.6.2. This release retains the existing automatic-switching
 controls and manual pause behavior.
 
 ## Local data
