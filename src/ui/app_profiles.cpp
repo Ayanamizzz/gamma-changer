@@ -449,16 +449,16 @@ void toggle_automatic_profiles(GuiState& gui) {
     set_automatic_profiles_enabled(gui, !gui.app_profile_config.enabled);
 }
 
-void keep_other_apps_profile(GuiState& gui) {
-    if (!gui.app_profile_config.enabled || !gui.profile_store_available) return;
+bool keep_other_apps_profile(GuiState& gui) {
+    if (!gui.app_profile_config.enabled || !gui.profile_store_available) return true;
     const auto* display = selected_display(gui);
     const Profile* current = active_profile(gui);
-    if (!display || !current || !current->saved) return;
+    if (!display || !current || !current->saved) return true;
     const std::wstring display_id = display_storage_id(*display);
-    if (pinned_other_apps_profile(gui, gui.app_profile_config, display_id)) return;
+    if (pinned_other_apps_profile(gui, gui.app_profile_config, display_id)) return true;
     AppProfileConfig config = gui.app_profile_config;
     set_app_fallback_profile(config, display_id, current->id);
-    save_app_config(gui, config);
+    return save_app_config(gui, config);
 }
 
 bool assign_app_to_profile(GuiState& gui, std::size_t profile_index, const std::wstring& path) {

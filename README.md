@@ -20,7 +20,7 @@ Adjust each display, save a profile, and let it follow the app in front.
 
 ## A look inside
 
-> **Development preview:** these screenshots and the instructions below describe the latest `main` branch. The current packaged release is **v2.6.2**, which uses the earlier interface.
+> **Latest release: v2.7.0.** The screenshots and instructions below show the single-window interface.
 
 ![Gamma Changer with the Gaming profile open: profile list on the left, a square tone curve beside six sliders, and the apps that switch to the profile underneath](docs/images/main-window.png)
 

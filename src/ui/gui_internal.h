@@ -388,7 +388,7 @@ bool unassign_app(GuiState& gui, const std::wstring& path);
 bool use_profile_for_other_apps(GuiState& gui, std::size_t profile_index);
 // Selecting another profile must not change what unlisted apps get while
 // Follow apps is on: pins the current profile for them if nothing is pinned.
-void keep_other_apps_profile(GuiState& gui);
+bool keep_other_apps_profile(GuiState& gui);
 // The "Add app" menu: running apps (last used first), then Browse. Built
 // separately from being shown so its contents can be checked without a screen.
 constexpr UINT kAddAppBrowseCommand = 1;

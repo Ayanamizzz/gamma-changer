@@ -264,6 +264,71 @@ bool check_app_assignment(const std::filesystem::path& root) {
              !assign_app_to_profile(gui, 2, L""));
         close(gui);
     }
+    {
+        // A failed fallback write must not change the desktop's selected profile.
+        FakeBackend backend;
+        GuiState gui(root / L"failed-pin", backend);
+        gui.displays.push_back(display);
+        gui.profiles = profiles;
+        gui.active_preset = 1;
+        gui.window = make_owner();
+        if (!gui.window) return false;
+        gui.app_profile_config.enabled = true;
+        std::wstring error;
+        if (!gui.store.save_app_profile_config(gui.app_profile_config, error) ||
+            !gui.controller.apply_and_save(display, reading, error)) return false;
+        set_params_to_controls(gui, reading);
+        mark_committed(gui, reading);
+        const auto rules = root / L"failed-pin" / L"app_rules.v1";
+        HANDLE locked = CreateFileW(rules.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                     OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (locked == INVALID_HANDLE_VALUE) return false;
+        select_preset(gui, 2);
+        step(gui.active_preset == 1 && shows(backend, reading) &&
+             gui.status_tone == StatusTone::error);
+        CloseHandle(locked);
+        select_preset(gui, 2);
+        step(gui.active_preset == 2 && shows(backend, gaming) &&
+             other_apps_id(gui.store.load_app_profile_config()) == L"reading");
+        close(gui);
+    }
+    {
+        // Keyboard activation opens the menu even when the pointer is over X.
+        // Position a hidden control under the pointer without moving the mouse.
+        FakeBackend backend;
+        GuiState gui(root / L"chip-input", backend);
+        gui.displays.push_back(display);
+        gui.profiles = profiles;
+        gui.active_preset = 2;
+        POINT pointer{};
+        GetCursorPos(&pointer);
+        gui.window = CreateWindowExW(WS_EX_NOACTIVATE, owner_class.lpszClassName, L"Owner",
+                                     WS_POPUP, pointer.x - 95, pointer.y - 10, 100, 30,
+                                     nullptr, nullptr, owner_class.hInstance, nullptr);
+        if (!gui.window) return false;
+        SetWindowLongPtrW(gui.window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&gui));
+        HWND chip = CreateWindowExW(0, L"BUTTON", L"Game.exe", WS_CHILD | BS_OWNERDRAW,
+                                    0, 0, 100, 28, gui.window,
+                                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(kAppChipIdBase)),
+                                    owner_class.hInstance, nullptr);
+        if (!chip || !SetWindowSubclass(chip, hover_button_proc, 1, 0)) return false;
+        assign_app_profile(gui.app_profile_config, game, display.stable_id, L"gaming");
+        std::wstring error;
+        if (!gui.store.save_app_profile_config(gui.app_profile_config, error)) return false;
+        refresh_app_chips(gui);
+        PostMessageW(gui.window, WM_NULL, 0, 0);
+        MSG queued{};
+        PeekMessageW(&queued, gui.window, WM_NULL, WM_NULL, PM_REMOVE);
+        // No chip-button menu anchor: the menu returns immediately in this fixture.
+        window_proc(gui.window, WM_COMMAND, MAKEWPARAM(kAppChipIdBase, BN_CLICKED),
+                    reinterpret_cast<LPARAM>(chip));
+        step(apps_using_profile(gui.app_profile_config, display.stable_id, L"gaming").size() == 1);
+        // A real mouse release over X removes the binding through the subclass.
+        SetCapture(chip);
+        SendMessageW(chip, WM_LBUTTONUP, 0, MAKELPARAM(95, 10));
+        step(apps_using_profile(gui.app_profile_config, display.stable_id, L"gaming").empty());
+        close(gui);
+    }
     UnregisterClassW(owner_class.lpszClassName, owner_class.hInstance);
     std::cout << (ok ? "PASS" : "FAIL")
               << ": adding an app saves, turns Follow apps on and pins other apps; opening a "

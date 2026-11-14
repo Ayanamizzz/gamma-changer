@@ -259,7 +259,7 @@ void select_preset(GuiState& gui, std::size_t index) {
     if (gui.session.dirty && !save_and_apply_current(gui, true)) return;
     if (!cancel_active_preview(gui)) return;
     // Opening another profile here must not change what other apps get.
-    keep_other_apps_profile(gui);
+    if (!keep_other_apps_profile(gui)) return;
     gui.session.profile_switch_undo_available = true;
     gui.session.undo_display_id.clear();
     if (const auto* current_display = selected_display(gui)) {

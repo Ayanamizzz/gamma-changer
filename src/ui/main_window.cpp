@@ -236,19 +236,9 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) >= kAppChipIdBase) {
             const std::size_t chip = static_cast<std::size_t>(LOWORD(wparam) - kAppChipIdBase);
             if (chip >= gui->apps.chips.size()) return 0;
-            // The cross at the right end removes; the rest of the chip opens
-            // its menu (move to another profile, remove).
-            RECT rect{};
-            GetWindowRect(reinterpret_cast<HWND>(lparam), &rect);
-            const DWORD position = GetMessagePos();
-            const POINT cursor{GET_X_LPARAM(position), GET_Y_LPARAM(position)};
-            const int cross = MulDiv(26, static_cast<int>(GetDpiForWindow(window)), 96);
-            if (PtInRect(&rect, cursor) && cursor.x >= rect.right - cross) {
-                const std::wstring path = gui->apps.chips[chip].path;
-                unassign_app(*gui, path);
-            } else {
-                show_app_chip_menu(*gui, chip);
-            }
+            // Mouse-only removal is handled by the chip subclass. Keyboard
+            // activation always opens the menu, regardless of pointer position.
+            show_app_chip_menu(*gui, chip);
             return 0;
         }
         if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) >= kProfileIdBase &&

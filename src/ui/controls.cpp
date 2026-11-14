@@ -59,6 +59,22 @@ LRESULT CALLBACK hover_button_proc(HWND button, UINT message, WPARAM wparam, LPA
         InvalidateRect(button, nullptr, FALSE);
         return 0;
     }
+    if (message == WM_LBUTTONUP && gui && GetCapture() == button) {
+        const int index = GetDlgCtrlID(button) - kAppChipIdBase;
+        RECT rect{};
+        GetClientRect(button, &rect);
+        const POINT cursor{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        const int cross = MulDiv(26, static_cast<int>(GetDpiForWindow(button)), 96);
+        if (index >= 0 && index < static_cast<int>(gui->apps.chips.size()) &&
+            PtInRect(&rect, cursor) && cursor.x >= rect.right - cross) {
+            const std::wstring path = gui->apps.chips[static_cast<std::size_t>(index)].path;
+            ReleaseCapture();
+            SendMessageW(button, BM_SETSTATE, FALSE, 0);
+            unassign_app(*gui, path);
+            SetFocus(gui->add_app_button);
+            return 0;
+        }
+    }
     if (message == WM_KEYDOWN && wparam == VK_DELETE && gui) {
         const int index = GetDlgCtrlID(button) - kAppChipIdBase;
         if (index >= 0 && index < static_cast<int>(gui->apps.chips.size())) {
