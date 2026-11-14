@@ -1,12 +1,12 @@
-// Developer tool: renders the real main window (and the app-profiles dialog)
-// off-screen with seeded sample data and saves PNG snapshots for visual review.
+// Developer tool: renders the real main window off-screen in several states
+// with seeded sample data and saves PNG snapshots for visual review.
 //
 //   ui_snapshot.exe <output-directory>
 //
-// Safety: the window uses a temporary data directory and a fake gamma-ramp
-// backend, so it never reads or writes the user's configuration and never
-// changes any display. It does not take the single-instance lock.
-#include "ui/app_dialogs.h"
+// Safety: the window uses a temporary data directory (profiles and log) and a
+// fake gamma-ramp backend, and it leaves the "Start with Windows" entry alone,
+// so it never reads or writes the user's configuration and never changes any
+// display. It does not take the single-instance lock.
 #include "ui/gui_internal.h"
 
 #include <wincodec.h>
@@ -138,16 +138,6 @@ std::vector<RunningApplication> sample_running_apps() {
     };
 }
 
-HWND show_snapshot_dialog(HWND owner, int id, DLGPROC proc, LPARAM draft, int x) {
-    HWND dialog = CreateDialogParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(id), owner,
-                                     proc, draft);
-    if (!dialog) return nullptr;
-    SetWindowPos(dialog, nullptr, x, 0, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-    ShowWindow(dialog, SW_SHOWNOACTIVATE);
-    pump(500);
-    return dialog;
-}
-
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
@@ -166,6 +156,9 @@ int wmain(int argc, wchar_t** argv) {
         std::filesystem::path(temp) / (L"GammaChangerSnapshot-" +
                                        std::to_wstring(GetCurrentProcessId()));
     std::filesystem::remove_all(root, ec);
+    // The logger resolves its folder from this variable: keep the tool's log
+    // lines out of the user's real log.
+    SetEnvironmentVariableW(L"LOCALAPPDATA", root.c_str());
 
     const auto displays = DisplayManager::enumerate();
     const std::wstring display_id =
@@ -188,9 +181,11 @@ int wmain(int argc, wchar_t** argv) {
     int exit_code = 0;
     {
         GuiState gui(root, backend);
+        gui.manage_startup_entry = false;  // never touch the user's startup entry
+        gui.startup_enabled = true;        // sample state for the picture
         const UINT dpi = GetDpiForSystem();
-        const int width = MulDiv(1120, static_cast<int>(dpi), 96);
-        const int height = MulDiv(800, static_cast<int>(dpi), 96);
+        const int width = MulDiv(1080, static_cast<int>(dpi), 96);
+        const int height = MulDiv(700, static_cast<int>(dpi), 96);
         // Far outside the virtual desktop: rendered by DWM, never visible.
         const int x = GetSystemMetrics(SM_XVIRTUALSCREEN) - width - 200;
         HWND window = CreateWindowExW(WS_EX_TOOLWINDOW, window_class.lpszClassName,
@@ -199,21 +194,70 @@ int wmain(int argc, wchar_t** argv) {
                                           WS_MINIMIZEBOX | WS_THICKFRAME | WS_MAXIMIZEBOX,
                                       x, 0, width, height, nullptr, nullptr, instance, &gui);
         if (!window) return 1;
+        gui.running_apps = sample_running_apps;
         ShowWindow(window, SW_SHOWNOACTIVATE);
         UpdateWindow(window);
         pump(900);
+        // Sample data only: never show the developer's real foreground app.
+        const auto show_sample_app = [&](std::size_t index) {
+            pump(400);  // let any scheduled evaluation of the real foreground app run first
+            gui.foreground_application = sample_running_apps()[index].executable_path;
+            gui.foreground_lookup_error = ERROR_SUCCESS;
+            update_automatic_profile_controls(gui);
+            set_status(gui, L"Ready", StatusTone::success);
+            pump(250);
+        };
+        const auto profile_index = [&](const wchar_t* id) {
+            for (std::size_t i = 0; i < gui.profiles.size(); ++i) {
+                if (gui.profiles[i].id == id) return i;
+            }
+            return std::size_t{0};
+        };
+
+        // Gaming: one app of its own.
+        show_sample_app(0);
         if (!snapshot(window, output / L"main.png")) exit_code = 1;
 
-        // Secondary states: paused switching, an unsaved edit, inline rename.
-        gui.auto_switch_paused = true;
-        update_automatic_profile_controls(gui);
+        // Reading: an app plus "All other apps".
+        select_preset(gui, profile_index(L"p-reading"));
+        show_sample_app(0);
+        snapshot(window, output / L"main_other_apps.png");
+
+        // Night: used by nothing; an unsaved edit and an inline rename.
+        select_preset(gui, profile_index(L"p-night"));
+        show_sample_app(0);
         SendMessageW(gui.gamma_slider, TBM_SETPOS, TRUE, 162);
         SendMessageW(window, WM_HSCROLL, 0, reinterpret_cast<LPARAM>(gui.gamma_slider));
-        begin_profile_rename(gui, 3);
+        begin_profile_rename(gui, profile_index(L"p-night"));
         pump(250);  // shorter than the auto-save delay
         snapshot(window, output / L"main_states.png");
         finish_profile_rename(gui, false);
-        gui.auto_switch_paused = false;
+        pump(900);
+
+        // Many apps on one profile: chips wrap, then fold into "+N more".
+        const std::size_t gaming = profile_index(L"p-gaming");
+        select_preset(gui, gaming);
+        for (const wchar_t* path :
+             {L"C:\\Games\\Elden Ring\\eldenring.exe", L"C:\\Games\\Hades II\\Hades2.exe",
+              L"C:\\Games\\Baldurs Gate 3\\bin\\bg3_dx11.exe",
+              L"C:\\Games\\Monster Hunter Wilds\\MonsterHunterWilds.exe",
+              L"C:\\Games\\Stardew Valley\\Stardew Valley.exe",
+              L"C:\\Games\\Helldivers 2\\bin\\helldivers2.exe",
+              L"C:\\Games\\Forza Horizon 5\\ForzaHorizon5.exe",
+              L"C:\\Games\\Counter-Strike 2\\bin\\win64\\cs2.exe"}) {
+            assign_app_to_profile(gui, gaming, path);
+        }
+        show_sample_app(1);
+        snapshot(window, output / L"main_many_apps.png");
+
+        // Follow apps off, at the minimum window size.
+        set_automatic_profiles_enabled(gui, false);
+        MINMAXINFO limits{};
+        SendMessageW(window, WM_GETMINMAXINFO, 0, reinterpret_cast<LPARAM>(&limits));
+        SetWindowPos(window, nullptr, 0, 0, limits.ptMinTrackSize.x, limits.ptMinTrackSize.y,
+                     SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        show_sample_app(1);
+        snapshot(window, output / L"main_minimum_off.png");
 
         if (argc > 2) {  // optional: also capture with the profile list scrolled
             gui.profile_scroll_offset = 1000;
@@ -221,33 +265,6 @@ int wmain(int argc, wchar_t** argv) {
             InvalidateRect(window, nullptr, FALSE);
             pump(300);
             snapshot(window, output / L"main_scrolled.png");
-        }
-
-        AppProfilesDraft profiles;
-        profiles.config = gui.app_profile_config;
-        profiles.profiles = gui.profiles;
-        for (std::size_t i = 0; i < gui.displays.size(); ++i) {
-            profiles.displays.push_back({display_storage_id(gui.displays[i]),
-                                         display_label(gui.displays[i], i)});
-        }
-        profiles.display_id = display_id;
-        profiles.running_apps = sample_running_apps;
-        if (HWND dialog = show_snapshot_dialog(window, IDD_APP_PROFILES, app_profiles_dialog_proc,
-                                               reinterpret_cast<LPARAM>(&profiles), x)) {
-            if (!snapshot(dialog, output / L"app_profiles.png")) exit_code = 1;
-            DestroyWindow(dialog);
-        }
-
-        AppAssignDraft assign;
-        assign.profiles = gui.profiles;
-        assign.profile_id = L"p-gaming";
-        assign.last_active_path = sample_running_apps()[1].executable_path;
-        assign.running_apps = sample_running_apps;
-        assign.title = L"Add app";
-        if (HWND dialog = show_snapshot_dialog(window, IDD_APP_ASSIGN, app_assign_dialog_proc,
-                                               reinterpret_cast<LPARAM>(&assign), x)) {
-            if (!snapshot(dialog, output / L"app_assign.png")) exit_code = 1;
-            DestroyWindow(dialog);
         }
         DestroyWindow(window);
         pump(100);

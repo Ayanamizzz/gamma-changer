@@ -23,25 +23,39 @@ int text_width(HDC dc, HFONT font, const std::wstring& text) {
     return size.cx;
 }
 
-void draw_card(HDC dc, const RECT& card, const Scale& s) {
-    // Two-step soft shadow, then a near-opaque white card with a hairline.
+// The editor card is the one raised surface: soft two-step shadow, near-opaque
+// white, hairline border.
+void draw_raised_card(HDC dc, const RECT& card, const Scale& s) {
+    const float radius = static_cast<float>(s(Metrics::card_radius));
     RECT shadow = card;
     OffsetRect(&shadow, 0, s(2));
-    ui::aa_fill_round_rect(dc, shadow, static_cast<float>(s(Metrics::card_radius)), RGB(40, 20, 60), 10);
+    ui::aa_fill_round_rect(dc, shadow, radius, RGB(40, 20, 60), 10);
     OffsetRect(&shadow, 0, -s(1));
     InflateRect(&shadow, 1, 1);
-    ui::aa_fill_round_rect(dc, shadow, static_cast<float>(s(Metrics::card_radius)), RGB(40, 20, 60), 8);
-    ui::aa_fill_round_rect(dc, card, static_cast<float>(s(Metrics::card_radius)), Theme::card, 238);
-    ui::aa_stroke_round_rect(dc, card, static_cast<float>(s(Metrics::card_radius)),
-                             Theme::card_border, 1.0f, 200);
+    ui::aa_fill_round_rect(dc, shadow, radius, RGB(40, 20, 60), 8);
+    ui::aa_fill_round_rect(dc, card, radius, Theme::card, 240);
+    ui::aa_stroke_round_rect(dc, card, radius, Theme::card_border, 1.0f, 200);
 }
 
-void draw_curve_card(HDC dc, const GuiState& gui, const UiGeometry& g) {
-    const Scale& s = g.scale;
-    draw_card(dc, g.curve_card, s);
-    const RECT& plot = g.curve_plot;
-    if (plot.right - plot.left < s(40) || plot.bottom - plot.top < s(40)) return;
+// The apps card sits lower: translucent, no shadow, so the wallpaper reads
+// through and the editor stays the focus.
+void draw_flat_card(HDC dc, const RECT& card, const Scale& s) {
+    const float radius = static_cast<float>(s(Metrics::card_radius));
+    ui::aa_fill_round_rect(dc, card, radius, Theme::card, 176);
+    ui::aa_stroke_round_rect(dc, card, radius, Theme::card_border, 1.0f, 170);
+}
 
+void draw_editor_card(HDC dc, const GuiState& gui, const UiGeometry& g) {
+    const Scale& s = g.scale;
+    draw_raised_card(dc, g.editor_card, s);
+    ui::aa_line(dc, static_cast<float>(g.controls_left), static_cast<float>(g.group_divider_y),
+                static_cast<float>(g.controls_right), static_cast<float>(g.group_divider_y),
+                Theme::divider, 1.0f);
+
+    const RECT& plot = g.curve_plot;
+    if (plot.right - plot.left < s(60)) return;
+    const float radius = static_cast<float>(s(6));
+    ui::aa_fill_round_rect(dc, plot, radius, Theme::plot_surface);
     for (int i = 1; i < 4; ++i) {
         const float x = plot.left + (plot.right - plot.left) * i / 4.0f;
         const float y = plot.top + (plot.bottom - plot.top) * i / 4.0f;
@@ -50,7 +64,14 @@ void draw_curve_card(HDC dc, const GuiState& gui, const UiGeometry& g) {
         ui::aa_line(dc, static_cast<float>(plot.left), y, static_cast<float>(plot.right), y,
                     Theme::grid, 1.0f);
     }
-    ui::aa_stroke_round_rect(dc, plot, static_cast<float>(s(4)), Theme::grid, 1.0f);
+    // Axis names sit in the two corners a tone curve rarely reaches.
+    const RECT output_label{plot.left + s(10), plot.top + s(8), plot.right, plot.top + s(26)};
+    const RECT input_label{plot.left, plot.bottom - s(26), plot.right - s(10), plot.bottom - s(8)};
+    draw_text(dc, gui.small_font, Theme::text_muted, L"Output", output_label,
+              DT_LEFT | DT_TOP | DT_SINGLELINE);
+    draw_text(dc, gui.small_font, Theme::text_muted, L"Input", input_label,
+              DT_RIGHT | DT_BOTTOM | DT_SINGLELINE);
+    // Reference: the unadjusted response.
     ui::aa_line(dc, static_cast<float>(plot.left), static_cast<float>(plot.bottom),
                 static_cast<float>(plot.right), static_cast<float>(plot.top),
                 Theme::reference_curve, 1.4f, 255, true);
@@ -70,57 +91,29 @@ void draw_curve_card(HDC dc, const GuiState& gui, const UiGeometry& g) {
         }
         return points;
     };
+    const int saved = SaveDC(dc);
+    IntersectClipRect(dc, plot.left, plot.top, plot.right, plot.bottom);
     const bool neutral = settings.r_gain == settings.g_gain && settings.g_gain == settings.b_gain;
     if (neutral) {
         const auto points = curve_points(0);
-        ui::aa_curve(dc, points.data(), static_cast<int>(points.size()), Theme::primary, 2.4f,
-                     plot.bottom, 26);
+        ui::aa_curve(dc, points.data(), static_cast<int>(points.size()), Theme::primary, 2.6f,
+                     plot.bottom, 24);
     } else {
         const COLORREF colors[3] = {Theme::curve_red, Theme::curve_green, Theme::curve_blue};
         for (std::size_t channel = 0; channel < 3; ++channel) {
             const auto points = curve_points(channel);
-            ui::aa_curve(dc, points.data(), static_cast<int>(points.size()), colors[channel], 2.0f);
+            ui::aa_curve(dc, points.data(), static_cast<int>(points.size()), colors[channel], 2.2f);
         }
     }
-
-    // Legend, right-aligned on the title row.
-    struct Entry {
-        COLORREF color;
-        const wchar_t* label;
-        bool dashed;
-    };
-    std::vector<Entry> legend{{Theme::reference_curve, L"Linear", true}};
-    if (neutral) {
-        legend.push_back({Theme::primary, L"Output", false});
-    } else {
-        legend.push_back({Theme::curve_red, L"R", false});
-        legend.push_back({Theme::curve_green, L"G", false});
-        legend.push_back({Theme::curve_blue, L"B", false});
-    }
-    int x = g.curve_card.right - s(20);
-    const int y = g.curve_card.top + s(28);
-    for (auto entry = legend.rbegin(); entry != legend.rend(); ++entry) {
-        const int width = text_width(dc, gui.small_font, entry->label);
-        x -= width;
-        draw_text(dc, gui.small_font, Theme::text_secondary, entry->label,
-                  RECT{x, y - s(10), x + width, y + s(10)}, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        x -= s(6) + s(16);
-        ui::aa_line(dc, static_cast<float>(x), static_cast<float>(y),
-                    static_cast<float>(x + s(16)), static_cast<float>(y), entry->color, 2.0f, 255,
-                    entry->dashed);
-        x -= s(14);
-    }
+    RestoreDC(dc, saved);
+    ui::aa_stroke_round_rect(dc, plot, radius, Theme::card_border, 1.0f);
 }
 
 void draw_sidebar_layer(HDC dc, const GuiState& gui, const UiGeometry& g) {
     const Scale& s = g.scale;
     const int P = g.padding;
-    // Section dividers.
-    ui::aa_line(dc, static_cast<float>(P), static_cast<float>(g.apps_top - s(12)),
-                static_cast<float>(g.sidebar_width - P), static_cast<float>(g.apps_top - s(12)),
-                Theme::sidebar_divider, 1.0f);
-    ui::aa_line(dc, static_cast<float>(P), static_cast<float>(g.sidebar_divider_y),
-                static_cast<float>(g.sidebar_width - P), static_cast<float>(g.sidebar_divider_y),
+    ui::aa_line(dc, static_cast<float>(P), static_cast<float>(g.automation_top),
+                static_cast<float>(g.sidebar_width - P), static_cast<float>(g.automation_top),
                 Theme::sidebar_divider, 1.0f);
 
     // Inline rename field.
@@ -142,7 +135,7 @@ void draw_sidebar_layer(HDC dc, const GuiState& gui, const UiGeometry& g) {
         const int thumb_top =
             g.profile_list.top +
             static_cast<int>(static_cast<long long>(gui.profile_scroll_offset) * travel / max_scroll);
-        const int x = g.sidebar_width - s(6);
+        const int x = g.sidebar_width - s(5);
         RECT thumb{x - s(3), thumb_top, x, thumb_top + thumb_height};
         ui::aa_fill_round_rect(dc, thumb, static_cast<float>(s(2)), Theme::sidebar_text, 70);
     }
@@ -166,13 +159,8 @@ void draw_value_boxes(HDC dc, const GuiState& gui, const UiGeometry& g) {
     }
 }
 
-void draw_footer(HDC dc, const GuiState& gui, const UiGeometry& g) {
+void draw_status_dot(HDC dc, const GuiState& gui, const UiGeometry& g) {
     const Scale& s = g.scale;
-    RECT footer{g.sidebar_width, g.footer_top, g.width, g.height};
-    ui::fill_layered_surface(dc, footer, Theme::card, 150);
-    ui::aa_line(dc, static_cast<float>(g.sidebar_width), static_cast<float>(g.footer_top),
-                static_cast<float>(g.width), static_cast<float>(g.footer_top), Theme::divider, 1.0f);
-
     COLORREF color = Theme::idle;
     switch (gui.status_tone) {
     case StatusTone::success: color = Theme::success; break;
@@ -180,7 +168,7 @@ void draw_footer(HDC dc, const GuiState& gui, const UiGeometry& g) {
     case StatusTone::error: color = Theme::error; break;
     case StatusTone::idle: break;
     }
-    const float cy = g.footer_top + s(Metrics::footer_height) / 2.0f;
+    const float cy = g.status_top + s(Metrics::status_height) / 2.0f;
     const float cx = g.main_left + static_cast<float>(s(7));
     ui::aa_fill_ellipse(dc, cx, cy, static_cast<float>(s(7)), color, 40);
     ui::aa_fill_ellipse(dc, cx, cy, static_cast<float>(s(4)), color);
@@ -190,27 +178,23 @@ void render_scene(HDC dc, GuiState& gui, const UiGeometry& g) {
     const RECT client{0, 0, g.width, g.height};
     gui.background.draw(dc, client, g.sidebar_width);
     draw_sidebar_layer(dc, gui, g);
-    draw_curve_card(dc, gui, g);
-    draw_card(dc, g.tone_card, g.scale);
-    draw_card(dc, g.color_card, g.scale);
+    draw_editor_card(dc, gui, g);
     draw_value_boxes(dc, gui, g);
-    draw_footer(dc, gui, g);
+    draw_flat_card(dc, g.apps_card, g.scale);
+    draw_status_dot(dc, gui, g);
 }
 
 // ---- Owner-drawn controls ---------------------------------------------------
 
-void draw_toggle(HDC dc, const RECT& rect, bool on, bool paused, bool enabled, const Scale& s) {
+void draw_toggle(HDC dc, const RECT& rect, bool on, bool enabled, const Scale& s) {
     const int height = s(20);
     const int width = s(36);
     const RECT track{rect.right - width, rect.top + (rect.bottom - rect.top - height) / 2,
                      rect.right, rect.top + (rect.bottom - rect.top + height) / 2};
-    const COLORREF color = !enabled ? Theme::toggle_off
-                         : paused   ? Theme::warning
-                         : on       ? Theme::primary
-                                    : Theme::toggle_off;
-    ui::aa_fill_round_rect(dc, track, height / 2.0f, color);
+    ui::aa_fill_round_rect(dc, track, height / 2.0f,
+                           enabled && on ? Theme::primary : Theme::toggle_off);
     const float radius = height / 2.0f - s(3);
-    const float cx = (on || paused) ? track.right - height / 2.0f : track.left + height / 2.0f;
+    const float cx = on ? track.right - height / 2.0f : track.left + height / 2.0f;
     ui::aa_fill_ellipse(dc, cx, (track.top + track.bottom) / 2.0f, radius, RGB(255, 255, 255));
 }
 
@@ -232,6 +216,17 @@ void draw_profile_row(const DRAWITEMSTRUCT& item, const GuiState& gui, std::size
     RECT label = item.rcItem;
     label.left += s(Metrics::profile_text_inset);
     label.right -= s(10);
+    // Which apps use the profile, right-aligned and quiet.
+    if (index < gui.profile_notes.size() && !gui.profile_notes[index].empty()) {
+        const std::wstring& note = gui.profile_notes[index];
+        const int note_width = text_width(item.hDC, gui.small_font, note);
+        RECT note_rect = label;
+        note_rect.left = std::max(label.left + s(40), label.right - note_width);
+        draw_text(item.hDC, gui.small_font,
+                  gui.apps.following ? Theme::sidebar_secondary : Theme::sidebar_muted, note,
+                  note_rect, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        label.right = note_rect.left - s(8);
+    }
     const std::wstring name = gui.profiles[index].name.empty() ? L"Unnamed profile"
                                                                : gui.profiles[index].name;
     draw_text(item.hDC, selected ? gui.section_font : gui.normal_font,
@@ -241,6 +236,69 @@ void draw_profile_row(const DRAWITEMSTRUCT& item, const GuiState& gui, std::size
         RECT focus = item.rcItem;
         InflateRect(&focus, -1, -1);
         ui::aa_stroke_round_rect(item.hDC, focus, radius, Theme::sidebar_secondary, 1.0f, 160);
+    }
+}
+
+void draw_cross(HDC dc, float cx, float cy, float half, COLORREF color) {
+    ui::aa_line(dc, cx - half, cy - half, cx + half, cy + half, color, 1.5f);
+    ui::aa_line(dc, cx - half, cy + half, cx + half, cy - half, color, 1.5f);
+}
+
+// Pill for one assigned app: icon, file name, and a remove cross.
+void draw_app_chip(const DRAWITEMSTRUCT& item, GuiState& gui, const AppChip& chip,
+                   const Scale& s, bool hovered, bool focused) {
+    HDC dc = item.hDC;
+    const RECT& rect = item.rcItem;
+    const float radius = (rect.bottom - rect.top) / 2.0f;
+    const bool live = gui.apps.following && chip.enabled;
+    ui::aa_fill_round_rect(dc, rect, radius,
+                           !live ? Theme::chip_off : hovered ? Theme::chip_hover : Theme::chip);
+    if (focused) ui::aa_stroke_round_rect(dc, rect, radius, Theme::primary, 1.5f);
+
+    const int icon_size = s(16);
+    const int icon_left = rect.left + s(8);
+    const int icon_top = rect.top + (rect.bottom - rect.top - icon_size) / 2;
+    if (HICON icon = app_icon(gui, chip.path)) {
+        DrawIconEx(dc, icon_left, icon_top, icon, icon_size, icon_size, 0, nullptr, DI_NORMAL);
+    } else {
+        // No readable icon (file missing or protected): a lettered tile.
+        const RECT tile{icon_left, icon_top, icon_left + icon_size, icon_top + icon_size};
+        ui::aa_fill_round_rect(dc, tile, static_cast<float>(s(4)),
+                               live ? Theme::primary : Theme::idle);
+        const std::wstring initial =
+            chip.label.empty() ? L"?" : std::wstring(1, static_cast<wchar_t>(towupper(chip.label[0])));
+        draw_text(dc, gui.small_font, RGB(255, 255, 255), initial, tile,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
+    const RECT label{icon_left + icon_size + s(7), rect.top, rect.right - s(26), rect.bottom};
+    draw_text(dc, gui.normal_font, live ? Theme::text : Theme::text_muted, chip.label, label,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    draw_cross(dc, static_cast<float>(rect.right - s(15)), (rect.top + rect.bottom) / 2.0f,
+               static_cast<float>(s(7)) / 2.0f,
+               hovered ? Theme::text : Theme::text_muted);
+}
+
+// Outlined pill that adds something: a plus and a label.
+void draw_action_chip(HDC dc, const RECT& rect, const GuiState& gui, const std::wstring& label,
+                      const Scale& s, bool plus, bool hovered, bool pressed, bool focused,
+                      bool disabled = false) {
+    const float radius = (rect.bottom - rect.top) / 2.0f;
+    ui::aa_fill_round_rect(dc, rect, radius, Theme::control_surface,
+                           disabled ? 110 : pressed ? 255 : hovered ? 236 : 170);
+    ui::aa_stroke_round_rect(dc, rect, radius,
+                             focused || hovered ? Theme::primary : Theme::input_border,
+                             focused ? 1.5f : 1.0f);
+    RECT text = rect;
+    if (plus) {
+        ui::draw_plus_icon(dc, rect.left + s(16), (rect.top + rect.bottom) / 2, s(4),
+                           disabled ? Theme::disabled_text : Theme::primary);
+        text.left += s(27);
+        text.right -= s(12);
+        draw_text(dc, gui.normal_font, disabled ? Theme::disabled_text : Theme::text, label, text,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    } else {
+        draw_text(dc, gui.normal_font, Theme::text_secondary, label, text,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
 }
 
@@ -257,14 +315,15 @@ void invalidate_control_background(GuiState& gui, HWND control, int padding) {
 
 void invalidate_preview_curve(GuiState& gui) {
     if (!gui.window) return;
-    const RECT card = ui_geometry(gui).curve_card;
-    RedrawWindow(gui.window, &card, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
+    RECT plot = ui_geometry(gui).curve_plot;
+    InflateRect(&plot, 2, 2);
+    RedrawWindow(gui.window, &plot, nullptr, RDW_INVALIDATE);
 }
 
 void invalidate_status_area(GuiState& gui) {
     if (!gui.window) return;
     const UiGeometry g = ui_geometry(gui);
-    RECT status{g.main_left, g.footer_top + 1, g.main_left + g.scale(60), g.height};
+    RECT status{g.main_left, g.status_top, g.main_left + g.scale(20), g.height};
     RedrawWindow(gui.window, &status, nullptr, RDW_INVALIDATE);
     invalidate_control_background(gui, gui.status, 3);
 }
@@ -287,6 +346,7 @@ void draw_owner_button(const DRAWITEMSTRUCT& item, const GuiState& const_gui) {
     const bool pressed = (item.itemState & ODS_SELECTED) != 0;
     const bool disabled = (item.itemState & ODS_DISABLED) != 0;
     const bool focused = (item.itemState & ODS_FOCUS) != 0 && (item.itemState & ODS_NOFOCUSRECT) == 0;
+    const bool hovered = gui.hovered_control == item.hwndItem && !disabled;
     const float radius = static_cast<float>(s(Metrics::control_radius));
     HDC dc = item.hDC;
     paint_parent_layer(item.hwndItem, dc, gui);
@@ -296,78 +356,119 @@ void draw_owner_button(const DRAWITEMSTRUCT& item, const GuiState& const_gui) {
     const std::wstring label = buffer;
     const UINT centered = DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS;
 
-    if (item.CtlID >= static_cast<UINT>(kProfileIdBase) &&
-        item.CtlID - kProfileIdBase < gui.profiles.size()) {
-        draw_profile_row(item, gui, item.CtlID - kProfileIdBase, s);
+    if (item.CtlID >= static_cast<UINT>(kAppChipIdBase)) {
+        const std::size_t index = item.CtlID - kAppChipIdBase;
+        if (index < gui.apps.chips.size()) {
+            draw_app_chip(item, gui, gui.apps.chips[index], s, hovered, focused);
+        }
+        return;
+    }
+    if (item.CtlID >= static_cast<UINT>(kProfileIdBase)) {
+        const std::size_t index = item.CtlID - kProfileIdBase;
+        if (index < gui.profiles.size()) draw_profile_row(item, gui, index, s);
         return;
     }
 
     switch (item.CtlID) {
     case kStartupToggle:
     case kAutoSwitchToggle: {
-        const bool automatic = item.CtlID == kAutoSwitchToggle;
-        const bool on = automatic ? gui.app_profile_config.enabled : gui.startup_enabled;
-        const bool paused = automatic && on && gui.auto_switch_paused;
+        const bool on = item.CtlID == kAutoSwitchToggle ? gui.app_profile_config.enabled
+                                                        : gui.startup_enabled;
         RECT text = item.rcItem;
         text.right -= s(48);
         draw_text(dc, gui.normal_font, disabled ? Theme::sidebar_muted : Theme::sidebar_text,
                   label, text, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-        draw_toggle(dc, item.rcItem, on, paused, !disabled, s);
+        draw_toggle(dc, item.rcItem, on, !disabled, s);
+        if (focused) {
+            ui::aa_stroke_round_rect(dc, item.rcItem, radius, Theme::sidebar_secondary, 1.0f, 120);
+        }
         return;
     }
     case kRefreshButton:
     case kPresetSave: {
         const int cx = (item.rcItem.left + item.rcItem.right) / 2;
         const int cy = (item.rcItem.top + item.rcItem.bottom) / 2;
-        if (pressed) {
+        if (pressed || hovered || focused) {
             ui::aa_fill_ellipse(dc, static_cast<float>(cx), static_cast<float>(cy),
-                                static_cast<float>(s(13)), Theme::sidebar_selected, 30);
+                                static_cast<float>(s(13)), Theme::sidebar_selected,
+                                pressed ? 36 : 20);
         }
-        const COLORREF color = disabled ? Theme::sidebar_divider : Theme::sidebar_secondary;
+        const COLORREF color = disabled ? Theme::sidebar_divider
+                             : hovered  ? Theme::sidebar_text
+                                        : Theme::sidebar_secondary;
         if (item.CtlID == kRefreshButton) ui::draw_refresh_icon(dc, cx, cy, s(6), color);
         else ui::draw_plus_icon(dc, cx, cy, s(6), color);
         return;
     }
-    case kAppRules: {
-        ui::aa_fill_round_rect(dc, item.rcItem, radius,
-                               pressed ? Theme::sidebar_field_border : Theme::sidebar_field);
-        ui::aa_stroke_round_rect(dc, item.rcItem, radius,
-                                 focused ? Theme::sidebar_secondary : Theme::sidebar_field_border);
-        draw_text(dc, gui.normal_font, disabled ? Theme::sidebar_muted : Theme::sidebar_text,
-                  label, item.rcItem, centered);
-        return;
-    }
-    case kApplyButton: {
-        const COLORREF fill = disabled ? Theme::primary_soft
-                            : pressed  ? Theme::primary_pressed
-                                       : Theme::primary;
-        ui::aa_fill_round_rect(dc, item.rcItem, radius, fill);
-        draw_text(dc, gui.section_font, disabled ? Theme::primary : RGB(255, 255, 255), label,
-                  item.rcItem, centered);
+    case kProfileMenu: {
+        if (pressed || hovered || focused) {
+            ui::aa_fill_round_rect(dc, item.rcItem, radius, Theme::control_surface,
+                                   pressed ? 255 : 200);
+            ui::aa_stroke_round_rect(dc, item.rcItem, radius,
+                                     focused ? Theme::primary : Theme::card_border);
+        }
+        const float cx = (item.rcItem.left + item.rcItem.right) / 2.0f;
+        const float cy = (item.rcItem.top + item.rcItem.bottom) / 2.0f;
+        for (int dot = -1; dot <= 1; ++dot) {
+            ui::aa_fill_ellipse(dc, cx + dot * static_cast<float>(s(6)), cy,
+                                static_cast<float>(s(3)) / 2.0f,
+                                disabled ? Theme::disabled_text : Theme::text_secondary);
+        }
         return;
     }
     case kBeforeAfter: {
+        const bool comparing = gui.session.comparing_original;
         ui::aa_fill_round_rect(dc, item.rcItem, radius,
-                               pressed ? Theme::primary_soft : Theme::secondary_surface,
-                               disabled ? 120 : 255);
+                               comparing ? Theme::primary_soft : Theme::control_surface,
+                               disabled ? 120 : hovered || comparing ? 255 : 220);
         ui::aa_stroke_round_rect(dc, item.rcItem, radius,
                                  disabled ? Theme::divider
-                                 : (pressed || gui.session.comparing_original) ? Theme::primary
-                                                                               : Theme::card_border);
+                                 : comparing || focused || hovered ? Theme::primary
+                                                                   : Theme::card_border,
+                                 focused ? 1.5f : 1.0f);
         draw_text(dc, gui.section_font, disabled ? Theme::disabled_text : Theme::text, label,
                   item.rcItem, centered);
         return;
     }
     case kResetButton: {
-        if (pressed) ui::aa_fill_round_rect(dc, item.rcItem, radius, Theme::divider);
+        if (pressed || hovered || focused) {
+            ui::aa_fill_round_rect(dc, item.rcItem, radius, Theme::control_surface,
+                                   pressed ? 255 : 200);
+            ui::aa_stroke_round_rect(dc, item.rcItem, radius,
+                                     focused ? Theme::primary : Theme::card_border);
+        }
         draw_text(dc, gui.section_font, disabled ? Theme::disabled_text : Theme::text_secondary,
                   label, item.rcItem, centered);
         return;
     }
-    default:
-        ui::aa_fill_round_rect(dc, item.rcItem, radius, Theme::primary);
+    case kAddApp:
+        draw_action_chip(dc, item.rcItem, gui, label, s, true, hovered, pressed, focused,
+                         disabled);
+        return;
+    case kAppOverflow:
+        draw_action_chip(dc, item.rcItem, gui, label, s, false, hovered, pressed, focused);
+        return;
+    case kOtherApps: {
+        if (!gui.apps.holds_other) {
+            draw_action_chip(dc, item.rcItem, gui, label, s, true, hovered, pressed, focused);
+            return;
+        }
+        // Held by this profile: a filled accent pill, the one fixed chip.
+        const float pill = (item.rcItem.bottom - item.rcItem.top) / 2.0f;
+        ui::aa_fill_round_rect(dc, item.rcItem, pill, Theme::primary);
+        if (focused) ui::aa_stroke_round_rect(dc, item.rcItem, pill, Theme::text, 1.5f);
         draw_text(dc, gui.normal_font, RGB(255, 255, 255), label, item.rcItem, centered);
         return;
+    }
+    case kApplyButton:
+    default: {
+        ui::aa_fill_round_rect(dc, item.rcItem, radius,
+                               pressed ? Theme::primary_pressed
+                               : hovered ? Theme::primary_hover
+                                         : Theme::primary);
+        draw_text(dc, gui.section_font, RGB(255, 255, 255), label, item.rcItem, centered);
+        return;
+    }
     }
 }
 

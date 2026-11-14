@@ -41,6 +41,14 @@ LRESULT CALLBACK profile_proc(HWND item, UINT message, WPARAM wparam, LPARAM lpa
             return 0;
         }
     }
+    // F2 or a double-click renames in place, as in a file list.
+    if (((message == WM_KEYDOWN && wparam == VK_F2) || message == WM_LBUTTONDBLCLK) && gui) {
+        const int index = GetDlgCtrlID(item) - kProfileIdBase;
+        if (index >= 0 && index < static_cast<int>(gui->profiles.size())) {
+            PostMessageW(gui->window, kProfileRenameMessage, static_cast<WPARAM>(index), 0);
+            return 0;
+        }
+    }
     if (message == WM_CONTEXTMENU && gui) {
         const int index = GetDlgCtrlID(item) - kProfileIdBase;
         if (index >= 0 && index < static_cast<int>(gui->profiles.size())) {
@@ -78,6 +86,23 @@ LRESULT CALLBACK profile_proc(HWND item, UINT message, WPARAM wparam, LPARAM lpa
 }
 
 
+
+void show_profile_menu(GuiState& gui, std::size_t index, POINT screen_point, UINT alignment) {
+    if (index >= gui.profiles.size()) return;
+    const bool fixed = gui.profiles[index].id == kBuiltinProfileId || !gui.profile_store_available;
+    HMENU menu = CreatePopupMenu();
+    AppendMenuW(menu, MF_STRING | (fixed ? MF_GRAYED : 0), 1, L"Rename\tF2");
+    AppendMenuW(menu, MF_STRING | (gui.profile_store_available ? 0 : MF_GRAYED), 2, L"Duplicate");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING | (fixed ? MF_GRAYED : 0), 3, L"Delete\tDel");
+    const UINT command = static_cast<UINT>(
+        TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | alignment, screen_point.x,
+                       screen_point.y, 0, gui.window, nullptr));
+    DestroyMenu(menu);
+    if (command == 1) begin_profile_rename(gui, index);
+    else if (command == 2) duplicate_profile(gui, index);
+    else if (command == 3) delete_preset(gui, index);
+}
 
 void refresh_preset_buttons(GuiState& gui) {
     ensure_profile_buttons(gui);
@@ -204,8 +229,7 @@ void create_profile_from_current(GuiState& gui) {
     select_preset(gui, new_index);
     if (gui.active_preset == new_index) {
         scroll_profile_into_view(gui, new_index);
-        set_status(gui, profile.name + L" created and applied  |  Ctrl+Z to go back",
-                   StatusTone::success);
+        set_status(gui, profile.name + L" created. Ctrl+Z to go back", StatusTone::success);
     } else {
         layout_controls_for_current_size(gui);
     }
@@ -229,11 +253,13 @@ bool save_and_apply_current(GuiState& gui, bool automatic);
 
 void select_preset(GuiState& gui, std::size_t index) {
     if (index >= gui.profiles.size() || gui.active_preset >= gui.profiles.size()) return;
-    if (!pause_automatic_profiles(gui)) return;
     if (index == gui.active_preset) return;
+    if (!restore_automatic_profiles(gui)) return;
     KillTimer(gui.window, kAutoSaveTimer);
     if (gui.session.dirty && !save_and_apply_current(gui, true)) return;
     if (!cancel_active_preview(gui)) return;
+    // Opening another profile here must not change what other apps get.
+    keep_other_apps_profile(gui);
     gui.session.profile_switch_undo_available = true;
     gui.session.undo_display_id.clear();
     if (const auto* current_display = selected_display(gui)) {
@@ -242,6 +268,7 @@ void select_preset(GuiState& gui, std::size_t index) {
     gui.session.undo_preset = gui.active_preset;
     gui.session.undo_params = params_from_sliders(gui);
     gui.session.undo_profile = gui.profiles[gui.active_preset];
+    const std::wstring previous_id = gui.profiles[gui.active_preset].id;
     gui.active_preset = index;
     const GammaParams next_params = gui.profiles[index].settings;
     set_params_to_controls(gui, next_params);
@@ -256,11 +283,16 @@ void select_preset(GuiState& gui, std::size_t index) {
                    StatusTone::error);
         return;
     }
+    gui.previous_profile_ids[display_storage_id(*display)] = previous_id;
     mark_committed(gui, next_params);
     refresh_preset_buttons(gui);
     remember_active_profile_for_display(gui, *display);
-    set_status(gui, gui.profiles[index].name + L" applied  |  Ctrl+Z to go back",
+    set_status(gui, gui.profiles[index].name +
+                        (gui.app_profile_config.enabled
+                             ? L" is shown while this window is open. Ctrl+Z to go back"
+                             : L" applied. Ctrl+Z to go back"),
                StatusTone::success);
+    schedule_automatic_profiles(gui);
 }
 
 void undo_profile_switch(GuiState& gui) {
@@ -268,7 +300,7 @@ void undo_profile_switch(GuiState& gui) {
         set_status(gui, L"Nothing to restore", StatusTone::idle);
         return;
     }
-    if (!pause_automatic_profiles(gui)) return;
+    if (!restore_automatic_profiles(gui)) return;
     if (!cancel_active_preview(gui)) return;
     const auto* display = selected_display(gui);
     if (!display) {
@@ -320,6 +352,7 @@ void undo_profile_switch(GuiState& gui) {
         remember_active_profile_for_display(gui, *active_display);
     }
     set_status(gui, L"Previous profile adjustments restored", StatusTone::success);
+    schedule_automatic_profiles(gui);
 }
 
 void delete_preset(GuiState& gui, std::size_t index) {
@@ -332,6 +365,7 @@ void delete_preset(GuiState& gui, std::size_t index) {
     int choice = IDCANCEL;
     if (FAILED(TaskDialog(gui.window, nullptr, L"Delete this profile?",
                           L"The profile and its saved settings will be removed permanently.",
+                          L"Apps that switch to it go back to the profile for other apps. "
                           L"Your current display adjustments will not change.",
                           TDCBF_YES_BUTTON | TDCBF_CANCEL_BUTTON, TD_WARNING_ICON, &choice))) {
         log_message(LogLevel::warning, L"Could not show the delete-profile confirmation dialog");

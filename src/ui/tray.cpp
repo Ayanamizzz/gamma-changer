@@ -37,9 +37,11 @@ void show_main_window(HWND window) {
     SetForegroundWindow(window);
 }
 
+// Choosing a profile from the tray means "use this one, whatever is in front":
+// Follow apps turns off and the profile applies to the selected display.
 bool apply_profile_from_tray(GuiState& gui, std::size_t index) {
     if (index >= gui.profiles.size()) return false;
-    if (!pause_automatic_profiles(gui)) return false;
+    if (!set_automatic_profiles_enabled(gui, false)) return false;
     if (gui.session.dirty) {
         KillTimer(gui.window, kAutoSaveTimer);
         if (!save_and_apply_current(gui, true)) {
@@ -55,51 +57,51 @@ bool apply_profile_from_tray(GuiState& gui, std::size_t index) {
 
     std::wstring error;
     if (!gui.controller.apply_and_save(*display, gui.profiles[index].settings, error)) {
-        set_status(gui, L"Tray profile apply failed: " + error, StatusTone::error);
+        set_status(gui, L"Could not apply the profile: " + error, StatusTone::error);
         return false;
     }
+    if (gui.active_preset < gui.profiles.size() && gui.active_preset != index) {
+        gui.previous_profile_ids[display_storage_id(*display)] =
+            gui.profiles[gui.active_preset].id;
+    }
     gui.active_preset = index;
+    gui.session.clear_undo();
     set_params_to_controls(gui, gui.profiles[index].settings);
     mark_committed(gui, gui.profiles[index].settings);
     refresh_preset_buttons(gui);
+    scroll_profile_into_view(gui, index);
     remember_active_profile_for_display(gui, *display);
     set_status(gui, gui.profiles[index].name + L" applied", StatusTone::success);
     log_message(LogLevel::info, L"Tray profile applied: " + gui.profiles[index].name);
     return true;
 }
 
+// One choice, two kinds of answer: follow the apps, or always use one profile.
 void show_tray_menu(HWND window) {
     auto* gui = state(window);
     HMENU menu = CreatePopupMenu();
-    HMENU profiles = CreatePopupMenu();
-    AppendMenuW(menu, MF_STRING, kTrayShowCommand, L"Show Window");
+    AppendMenuW(menu, MF_STRING, kTrayShowCommand, L"Open Gamma Changer");
+    SetMenuDefaultItem(menu, kTrayShowCommand, FALSE);
     if (gui) {
+        const bool following = gui->app_profile_config.enabled;
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING | (following ? MF_CHECKED : 0), kTrayFollowAppsCommand,
+                    L"Follow apps");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, L"Always use");
         for (std::size_t i = 0; i < gui->profiles.size(); ++i) {
-            std::wstring name = gui->profiles[i].name;
+            std::wstring name = gui->profiles[i].name.empty() ? L"Unnamed profile"
+                                                              : gui->profiles[i].name;
             std::size_t ampersand = 0;
             while ((ampersand = name.find(L'&', ampersand)) != std::wstring::npos) {
                 name.insert(ampersand, 1, L'&');
                 ampersand += 2;
             }
-            const UINT flags = MF_STRING | (i == gui->active_preset ? MF_CHECKED : MF_UNCHECKED);
-            AppendMenuW(profiles, flags, kTrayProfileCommandBase + static_cast<UINT>(i),
-                        name.c_str());
+            const bool in_use = !following && i == gui->active_preset;
+            const UINT id = kTrayProfileCommandBase + static_cast<UINT>(i);
+            AppendMenuW(menu, MF_STRING, id, name.c_str());
+            if (in_use) CheckMenuRadioItem(menu, id, id, id, MF_BYCOMMAND);
         }
-    }
-    if (GetMenuItemCount(profiles) == 0) {
-        AppendMenuW(profiles, MF_STRING | MF_GRAYED, 0, L"No saved profiles");
-    }
-    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(profiles), L"Profiles");
-    if (gui) {
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING | (gui->app_profile_config.enabled ? MF_CHECKED : 0),
-                    kTrayAutoSwitchCommand, L"Switch profiles automatically");
-        if (gui->app_profile_config.enabled) {
-            AppendMenuW(menu, MF_STRING, kTrayAutoPauseCommand,
-                        gui->auto_switch_paused ? L"Resume automatic switching"
-                                                : L"Pause automatic switching");
-        }
-        AppendMenuW(menu, MF_STRING, kTrayAppRulesCommand, L"Manage apps\u2026");
     }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kTrayExitCommand, L"Exit");
@@ -116,19 +118,8 @@ void show_tray_menu(HWND window) {
         show_main_window(window);
     } else if (command == kTrayExitCommand) {
         SendMessageW(window, WM_CLOSE, 0, 0);
-    } else if (gui && command == kTrayAutoSwitchCommand) {
-        // This menu item toggles the saved enabled state even while manually paused.
-        if (gui->app_profile_config.enabled) {
-            gui->auto_switch_paused = false;
-            toggle_automatic_profiles(*gui);
-        } else {
-            resume_automatic_profiles(*gui);
-        }
-    } else if (gui && command == kTrayAutoPauseCommand) {
-        if (gui->auto_switch_paused) resume_automatic_profiles(*gui);
-        else pause_automatic_profiles(*gui);
-    } else if (gui && command == kTrayAppRulesCommand) {
-        show_application_rules(*gui);
+    } else if (gui && command == kTrayFollowAppsCommand) {
+        toggle_automatic_profiles(*gui);
     } else if (gui && command >= kTrayProfileCommandBase &&
                command < kTrayProfileCommandBase + gui->profiles.size()) {
         apply_profile_from_tray(*gui,

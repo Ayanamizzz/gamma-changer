@@ -1,6 +1,5 @@
-// Native GUI regression checks: real dialogs and the real window procedure,
+// Native GUI regression checks: the real window glue and window procedure,
 // with isolated storage and a fake gamma backend (no display is ever changed).
-#include "ui/app_dialogs.h"
 #include "ui/gui_internal.h"
 
 #include <filesystem>
@@ -19,46 +18,21 @@ bool last_force = false;
 struct FakeBackend final : DisplayRampBackend {
     GammaRamp current = build_ramp(default_params());
     unsigned writes = 0;
+    bool fail_writes = false;
     bool read(const DisplayInfo&, GammaRamp& ramp, std::wstring&) override {
         ramp = current;
         return true;
     }
-    bool write(const DisplayInfo&, const GammaRamp& ramp, std::wstring&) override {
+    bool write(const DisplayInfo&, const GammaRamp& ramp, std::wstring& error) override {
+        if (fail_writes) {
+            error = L"the display rejected the ramp";
+            return false;
+        }
         current = ramp;
         ++writes;
         return true;
     }
 };
-
-bool controls_inside(HWND dialog) {
-    RECT client{};
-    GetClientRect(dialog, &client);
-    bool ok = true;
-    for (HWND child = GetWindow(dialog, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
-        RECT rect{};
-        GetWindowRect(child, &rect);
-        MapWindowPoints(nullptr, dialog, reinterpret_cast<POINT*>(&rect), 2);
-        ok &= rect.left >= 0 && rect.top >= 0 && rect.right <= client.right &&
-              rect.bottom <= client.bottom;
-    }
-    return ok;
-}
-
-void select_list_row(HWND list, int row) {
-    ListView_SetItemState(list, row, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-}
-
-std::wstring list_text(HWND list, int row, int column) {
-    wchar_t text[256]{};
-    ListView_GetItemText(list, row, column, text, static_cast<int>(std::size(text)));
-    return text;
-}
-
-void choose_combo(HWND dialog, int id, int index) {
-    HWND combo = GetDlgItem(dialog, id);
-    SendMessageW(combo, CB_SETCURSEL, static_cast<WPARAM>(index), 0);
-    SendMessageW(dialog, WM_COMMAND, MAKEWPARAM(id, CBN_SELCHANGE), reinterpret_cast<LPARAM>(combo));
-}
 
 bool check_application_switching(const std::filesystem::path& root) {
     FakeBackend backend;
@@ -135,246 +109,300 @@ bool check_application_switching(const std::filesystem::path& root) {
     return ok;
 }
 
-bool check_assign_dialog() {
-    const std::vector<RunningApplication> running{
-        {L"", L"Protected game", 11, ERROR_ACCESS_DENIED},
-        {L"C:\\Games\\Game.exe", L"Game window", 22, ERROR_SUCCESS},
-        {L"D:\\Portable\\Game.exe", L"Another installation", 33, ERROR_SUCCESS},
-        {L"C:\\Apps\\Browser.exe", L"Browser", 44, ERROR_SUCCESS},
+// The glue behind the Apps card and the tray: every change saves at once,
+// adding an app turns Follow apps on, and other apps keep what they had.
+bool check_app_assignment(const std::filesystem::path& root) {
+    WNDCLASSW owner_class{};
+    owner_class.lpfnWndProc = DefWindowProcW;
+    owner_class.hInstance = GetModuleHandleW(nullptr);
+    owner_class.lpszClassName = L"GammaChangerAssignmentOwner";
+    if (!RegisterClassW(&owner_class)) return false;
+
+    DisplayInfo display;
+    display.device_name = L"FAKE-DISPLAY";
+    display.stable_id = L"fake-screen";
+    CalibrationSettings reading;
+    reading.gamma = 1.20;
+    CalibrationSettings gaming;
+    gaming.gamma = 1.65;
+    const std::vector<Profile> profiles{builtin_default_profile(),
+                                        {L"reading", L"Reading", reading, true},
+                                        {L"gaming", L"Gaming", gaming, true}};
+    const std::wstring game = L"C:\\Games\\Game.exe";
+    const std::wstring other_app = L"C:\\Apps\\Editor.exe";
+    const auto shows = [](const FakeBackend& backend, const CalibrationSettings& settings) {
+        return backend.current.channel == build_ramp(settings).channel;
     };
-    const std::vector<Profile> profiles{{L"common", L"Common", default_params(), true},
-                                        {L"draft", L"Draft", default_params(), false},
-                                        {L"gaming", L"Gaming", default_params(), true}};
-    bool ok = true;
-    unsigned refreshes = 0;
-
-    // New assignment: last active app first and preselected; only saved profiles.
-    AppAssignDraft draft;
-    draft.profiles = profiles;
-    draft.profile_id = L"gaming";
-    draft.last_active_path = L"C:\\Apps\\Browser.exe";
-    draft.running_apps = [&] { ++refreshes; return running; };
-    HWND dialog = CreateDialogParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_APP_ASSIGN),
-                                     nullptr, app_assign_dialog_proc,
-                                     reinterpret_cast<LPARAM>(&draft));
-    if (!dialog) return false;
-    HWND list = GetDlgItem(dialog, IDC_ASSIGN_APP_LIST);
-    ok &= controls_inside(dialog) && ListView_GetItemCount(list) == 4 &&
-          ListView_GetNextItem(list, -1, LVNI_SELECTED) == 0 &&
-          draft.rows[0].executable_path == L"C:\\Apps\\Browser.exe";
-    ok &= SendDlgItemMessageW(dialog, IDC_ASSIGN_PROFILE, CB_GETCOUNT, 0, 0) == 2 &&
-          SendDlgItemMessageW(dialog, IDC_ASSIGN_PROFILE, CB_GETCURSEL, 0, 0) == 1;
-    // Unreadable process: OK disabled and pressing it does nothing.
-    select_list_row(list, 1);
-    ok &= draft.rows[1].executable_path.empty() && !IsWindowEnabled(GetDlgItem(dialog, IDOK));
-    SendMessageW(dialog, WM_COMMAND, IDOK, 0);
-    ok &= IsWindow(dialog) != FALSE;
-    // Same file name, different installation: the exact path is chosen.
-    select_list_row(list, 3);
-    choose_combo(dialog, IDC_ASSIGN_PROFILE, 0);
-    NMHDR double_click{list, IDC_ASSIGN_APP_LIST, NM_DBLCLK};
-    SendMessageW(dialog, WM_NOTIFY, IDC_ASSIGN_APP_LIST, reinterpret_cast<LPARAM>(&double_click));
-    ok &= draft.executable_path == L"D:\\Portable\\Game.exe" && draft.profile_id == L"common";
-    if (IsWindow(dialog)) DestroyWindow(dialog);
-
-    // Change: an app that is not running stays listed and selected; refresh
-    // keeps the selection.
-    AppAssignDraft change;
-    change.profiles = profiles;
-    change.executable_path = L"E:\\Old\\Tool.exe";
-    change.profile_id = L"common";
-    change.running_apps = [&] { ++refreshes; return running; };
-    dialog = CreateDialogParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_APP_ASSIGN),
-                                nullptr, app_assign_dialog_proc, reinterpret_cast<LPARAM>(&change));
-    if (!dialog) return false;
-    list = GetDlgItem(dialog, IDC_ASSIGN_APP_LIST);
-    ok &= ListView_GetItemCount(list) == 5 && list_text(list, 0, 1) == L"Not running" &&
-          ListView_GetNextItem(list, -1, LVNI_SELECTED) == 0 &&
-          IsWindowEnabled(GetDlgItem(dialog, IDOK)) != FALSE;
-    const unsigned before = refreshes;
-    SendMessageW(dialog, WM_COMMAND, IDC_ASSIGN_REFRESH, 0);
-    ok &= refreshes == before + 1 && ListView_GetNextItem(list, -1, LVNI_SELECTED) == 0;
-    SendMessageW(dialog, WM_COMMAND, IDCANCEL, 0);
-    ok &= change.executable_path == L"E:\\Old\\Tool.exe";
-    if (IsWindow(dialog)) DestroyWindow(dialog);
-
-    std::cout << (ok ? "PASS" : "FAIL")
-              << ": choose-app dialog; last-active preselection; saved profiles only; unreadable "
-                 "rows gated; exact-path selection; not-running app kept across refresh\n";
-    return ok;
-}
-
-bool check_profiles_dialog() {
-    const std::wstring screen = L"screen-a";
-    AppProfilesDraft draft;
-    draft.profiles = {{L"common", L"Common", default_params(), true},
-                      {L"gaming", L"Gaming", default_params(), true}};
-    draft.displays = {{screen, L"Screen 1"}};
-    draft.display_id = screen;
-    // Legacy config: a second display that is disconnected now.
-    draft.config.rules = {{L"C:\\Apps\\Browser.exe", screen, L"common", true, L"rule-1", L""},
-                          {L"C:\\Apps\\Browser.exe", L"screen-b", L"gaming", true, L"rule-2", L""}};
-    std::wstring next_path = L"C:\\Games\\Game.exe";
-    std::wstring next_profile = L"gaming";
-    unsigned chooser_calls = 0;
-    draft.choose = [&](HWND, AppAssignDraft& pick) {
-        ++chooser_calls;
-        pick.executable_path = next_path;
-        pick.profile_id = next_profile;
-        return true;
+    const auto other_apps_id = [&](const AppProfileConfig& config) {
+        const auto* pinned = find_app_fallback_profile(config, display.stable_id);
+        return pinned ? pinned->profile_id : std::wstring{};
     };
-    unsigned commits = 0;
-    bool commit_result = false;
-    AppProfileConfig committed;
-    draft.commit = [&](const AppProfileConfig& config, std::wstring& error) {
-        ++commits;
-        committed = config;
-        if (!commit_result) error = L"disk full";
-        return commit_result;
+    const auto make_owner = [&] {
+        return CreateWindowExW(0, owner_class.lpszClassName, L"Owner", WS_OVERLAPPED, 0, 0, 100,
+                               100, nullptr, nullptr, owner_class.hInstance, nullptr);
+    };
+    const auto close = [](GuiState& gui) {
+        gui.foreground_watcher.stop();
+        KillTimer(gui.window, kForegroundProfileTimer);
+        DestroyWindow(gui.window);
     };
 
-    HWND dialog = CreateDialogParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_APP_PROFILES),
-                                     nullptr, app_profiles_dialog_proc,
-                                     reinterpret_cast<LPARAM>(&draft));
-    if (!dialog) return false;
-    HWND list = GetDlgItem(dialog, IDC_APP_LIST);
     bool ok = true;
     int step_number = 0;
     const auto step = [&](bool condition) {
         ++step_number;
-        if (!condition) std::cout << "  app-profiles dialog step " << step_number << " failed\n";
+        if (!condition) std::cout << "  app assignment step " << step_number << " failed\n";
         ok &= condition;
     };
-    step(controls_inside(dialog));
-    step(IsDlgButtonChecked(dialog, IDC_APP_AUTO_SWITCH) == BST_UNCHECKED &&
-          ListView_GetItemCount(list) == 1 && list_text(list, 0, 1) == L"Common");
-    step(SendDlgItemMessageW(dialog, IDC_APP_DISPLAY, CB_GETCOUNT, 0, 0) == 2 &&
-          (GetWindowLongPtrW(GetDlgItem(dialog, IDC_APP_DISPLAY), GWL_STYLE) & WS_VISIBLE) != 0);
 
-    // Add: one dialog step, switching turned on (visible, not yet saved).
-    SendMessageW(dialog, WM_COMMAND, IDC_APP_ADD, 0);
-    step(chooser_calls == 1 && ListView_GetItemCount(list) == 2 &&
-          list_text(list, 1, 0) == L"Game.exe" && list_text(list, 1, 1) == L"Gaming" &&
-          IsDlgButtonChecked(dialog, IDC_APP_AUTO_SWITCH) == BST_CHECKED && draft.config.enabled);
-
-    // Change the browser to Gaming via the selected row.
-    select_list_row(list, 0);
-    next_path = L"C:\\Apps\\Browser.exe";
-    SendMessageW(dialog, WM_COMMAND, IDC_APP_CHANGE, 0);
-    step(list_text(list, 0, 1) == L"Gaming" &&
-          find_app_profile_rule_by_id(draft.config, L"rule-1")->profile_id == L"gaming");
-
-    // Remove the game with the Delete key.
-    select_list_row(list, 1);
-    NMLVKEYDOWN key{{list, IDC_APP_LIST, LVN_KEYDOWN}, VK_DELETE, 0};
-    SendMessageW(dialog, WM_NOTIFY, IDC_APP_LIST, reinterpret_cast<LPARAM>(&key));
-    step(ListView_GetItemCount(list) == 1);
-
-    // Other apps -> Common on this display only.
-    choose_combo(dialog, IDC_APP_OTHER_PROFILE, 1);
-    const auto* fallback = find_app_fallback_profile(draft.config, screen);
-    step(fallback && fallback->profile_id == L"common");
-
-    // The disconnected display keeps its own assignment.
-    choose_combo(dialog, IDC_APP_DISPLAY, 1);
-    step(draft.display_id == L"screen-b" && ListView_GetItemCount(list) == 1 &&
-          list_text(list, 0, 1) == L"Gaming");
-
-    // A failed save keeps the dialog open; a successful one closes it.
-    SendMessageW(dialog, WM_COMMAND, IDOK, 0);
-    wchar_t hint[128]{};
-    GetDlgItemTextW(dialog, IDC_APP_HINT, hint, static_cast<int>(std::size(hint)));
-    step(commits == 1 && std::wstring(hint).find(L"disk full") != std::wstring::npos);
-    commit_result = true;
-    SendMessageW(dialog, WM_COMMAND, IDOK, 0);
-    step(commits == 2 && committed.enabled && committed.rules.size() == 2);
-    if (IsWindow(dialog)) DestroyWindow(dialog);
-
-    // Cancel never commits.
-    AppProfilesDraft cancel = draft;
-    commits = 0;
-    dialog = CreateDialogParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_APP_PROFILES),
-                                nullptr, app_profiles_dialog_proc, reinterpret_cast<LPARAM>(&cancel));
-    if (!dialog) return false;
-    SendMessageW(dialog, WM_COMMAND, IDC_APP_AUTO_SWITCH, 0);
-    SendMessageW(dialog, WM_COMMAND, IDCANCEL, 0);
-    step(commits == 0);
-    if (IsWindow(dialog)) DestroyWindow(dialog);
-
-    std::cout << (ok ? "PASS" : "FAIL")
-              << ": app-profiles dialog; add turns switching on; change/remove; other-apps "
-                 "default; disconnected display kept; failed save stays open; cancel never saves\n";
-    return ok;
-}
-
-// Drives the real modal dialog opened by show_application_rules().
-constexpr UINT_PTR kModalAutomationTimer = 0x7001;
-struct ModalAutomation {
-    HWND owner = nullptr;
-    bool toggle = false;
-    UINT button = IDOK;
-    bool done = false;
-};
-ModalAutomation* modal_automation = nullptr;
-
-void CALLBACK drive_modal(HWND window, UINT, UINT_PTR timer, DWORD) {
-    if (!modal_automation) return;
-    EnumThreadWindows(GetCurrentThreadId(), [](HWND candidate, LPARAM) -> BOOL {
-        if (GetWindow(candidate, GW_OWNER) != modal_automation->owner ||
-            !GetDlgItem(candidate, IDC_APP_AUTO_SWITCH)) {
-            return TRUE;
-        }
-        ShowWindow(candidate, SW_HIDE);  // this fixture's own dialog
-        if (modal_automation->toggle) {
-            SendDlgItemMessageW(candidate, IDC_APP_AUTO_SWITCH, BM_CLICK, 0, 0);
-        }
-        SendMessageW(candidate, WM_COMMAND, modal_automation->button, 0);
-        modal_automation->done = true;
-        return FALSE;
-    }, 0);
-    if (modal_automation->done) KillTimer(window, timer);
-}
-
-bool check_profiles_dialog_commit(const std::filesystem::path& root) {
-    WNDCLASSW owner_class{};
-    owner_class.lpfnWndProc = DefWindowProcW;
-    owner_class.hInstance = GetModuleHandleW(nullptr);
-    owner_class.lpszClassName = L"GammaChangerAppProfilesOwner";
-    if (!RegisterClassW(&owner_class)) return false;
-    bool ok = true;
-    for (const UINT button : {static_cast<UINT>(IDCANCEL), static_cast<UINT>(IDOK)}) {
+    {
         FakeBackend backend;
-        GuiState gui(root / std::to_wstring(button), backend);
-        DisplayInfo display;
-        display.device_name = L"FAKE-DISPLAY";
-        display.stable_id = L"fake-screen";
+        GuiState gui(root / L"first", backend);
         gui.displays.push_back(display);
-        gui.profiles = {{L"common", L"Common", default_params(), true}};
-        gui.app_profile_config.rules = {
-            {L"C:\\Apps\\Browser.exe", display.stable_id, L"common", true, L"rule-1", L""}};
-        gui.auto_switch_paused = true;
-        gui.window = CreateWindowExW(0, owner_class.lpszClassName, L"Owner", WS_OVERLAPPED, 0, 0,
-                                     100, 100, nullptr, nullptr, owner_class.hInstance, nullptr);
-        if (!gui.window) { ok = false; break; }
-        ModalAutomation automation{gui.window, true, button};
-        modal_automation = &automation;
-        SetTimer(gui.window, kModalAutomationTimer, 10, drive_modal);
-        show_application_rules(gui);
-        KillTimer(gui.window, kModalAutomationTimer);
-        modal_automation = nullptr;
-        const bool saved = button == IDOK;
-        const auto persisted = gui.store.load_app_profile_config();
-        ok &= automation.done && gui.app_profile_config.enabled == saved &&
-              gui.auto_switch_paused != saved && persisted.enabled == saved &&
-              backend.writes == 0;
-        gui.foreground_watcher.stop();
-        KillTimer(gui.window, kForegroundProfileTimer);
-        DestroyWindow(gui.window);
+        gui.profiles = profiles;
+        gui.active_preset = 1;  // Reading is what the desktop shows
+        gui.window = make_owner();
+        if (!gui.window) return false;
+
+        // Add an app to a profile that is not open: one call, saved, switching
+        // on, and everything else keeps the profile on screen.
+        step(assign_app_to_profile(gui, 2, game));
+        AppProfileConfig saved = gui.store.load_app_profile_config();
+        step(saved.enabled && gui.app_profile_config.enabled &&
+             apps_using_profile(saved, display.stable_id, L"gaming").size() == 1 &&
+             other_apps_id(saved) == L"reading");
+
+        // Opening Gaming to edit it shows it, but changes nothing for apps.
+        select_preset(gui, 2);
+        saved = gui.store.load_app_profile_config();
+        step(gui.active_preset == 2 && saved.enabled && other_apps_id(saved) == L"reading" &&
+             shows(backend, gaming));
+        apply_application_profiles(gui, other_app, true);
+        step(shows(backend, reading));
+        apply_application_profiles(gui, game, true);
+        step(shows(backend, gaming));
+
+        // "All other apps" moves to the open profile; then the app is removed.
+        step(use_profile_for_other_apps(gui, 2) &&
+             other_apps_id(gui.store.load_app_profile_config()) == L"gaming");
+        step(unassign_app(gui, game) &&
+             apps_using_profile(gui.store.load_app_profile_config(), display.stable_id, L"gaming")
+                 .empty() &&
+             !unassign_app(gui, game));
+
+        // A profile chosen from the tray is used for everything: switching off.
+        apply_application_profiles(gui, other_app, true);
+        step(apply_profile_from_tray(gui, 1) && !gui.store.load_app_profile_config().enabled &&
+             gui.active_preset == 1 && gui.app_runtime.empty() && shows(backend, reading));
+
+        // Turning it back on leaves the desktop as it is.
+        step(set_automatic_profiles_enabled(gui, true) &&
+             other_apps_id(gui.store.load_app_profile_config()) == L"gaming");
+        close(gui);
+    }
+    {
+        // The usual first run: make a profile, tune it, then give it an app.
+        // The profile is the one on screen, so other apps keep the one before.
+        FakeBackend backend;
+        GuiState gui(root / L"second", backend);
+        gui.displays.push_back(display);
+        gui.profiles = profiles;
+        gui.active_preset = 1;
+        gui.window = make_owner();
+        if (!gui.window) return false;
+        select_preset(gui, 2);
+        step(!gui.app_profile_config.enabled && other_apps_id(gui.app_profile_config).empty());
+        step(assign_app_to_profile(gui, 2, game) && gui.app_profile_config.enabled &&
+             other_apps_id(gui.app_profile_config) == L"reading");
+
+        // Turning switching on with nothing pinned keeps the open profile.
+        AppProfileConfig cleared = gui.app_profile_config;
+        cleared.enabled = false;
+        set_app_fallback_profile(cleared, display.stable_id, L"");
+        gui.app_profile_config = cleared;
+        step(set_automatic_profiles_enabled(gui, true) &&
+             other_apps_id(gui.store.load_app_profile_config()) == L"gaming");
+
+        // The "Add app" menu for the open profile (Gaming, which has the game):
+        // last used app first, the game marked as already here, an app of
+        // another profile announced as a move, protected apps not selectable.
+        assign_app_to_profile(gui, 1, L"C:\\Apps\\Browser.exe");
+        gui.foreground_application = L"c:/apps/editor.exe";
+        gui.running_apps = [] {
+            return std::vector<RunningApplication>{
+                {L"", L"Protected game", 11, ERROR_ACCESS_DENIED},
+                {L"C:\\Games\\Game.exe", L"Game & window", 22, ERROR_SUCCESS},
+                {L"C:\\Apps\\Browser.exe", L"Browser", 33, ERROR_SUCCESS},
+                {L"C:\\Apps\\Editor.exe", L"Editor", 44, ERROR_SUCCESS},
+            };
+        };
+        const AddAppMenu add = build_add_app_menu(gui);
+        const auto item_text = [&](int position) {
+            wchar_t text[160]{};
+            GetMenuStringW(add.menu, static_cast<UINT>(position), text,
+                           static_cast<int>(std::size(text)), MF_BYPOSITION);
+            return std::wstring(text);
+        };
+        const auto item_state = [&](int position) {
+            return GetMenuState(add.menu, static_cast<UINT>(position), MF_BYPOSITION);
+        };
+        step(add.menu && GetMenuItemCount(add.menu) == 6 && add.paths.size() == 3 &&
+             add.paths[0] == L"C:\\Apps\\Editor.exe" &&
+             item_text(0) == L"Editor.exe\tEditor" && (item_state(0) & MF_GRAYED) == 0);
+        step((item_state(1) & MF_GRAYED) != 0 &&
+             item_text(1).find(L"Protected game") != std::wstring::npos);
+        step(item_text(2) == L"Game.exe\tGame && window" &&
+             (item_state(2) & (MF_GRAYED | MF_CHECKED)) == (MF_GRAYED | MF_CHECKED));
+        step(item_text(3) == L"Browser.exe\tmoves from Reading" &&
+             (item_state(3) & MF_GRAYED) == 0 &&
+             GetMenuItemID(add.menu, 5) == kAddAppBrowseCommand);
+        if (add.menu) DestroyMenu(add.menu);
+
+        // Unsaved profiles and unknown indexes are refused without saving.
+        gui.profiles.push_back({L"draft", L"Draft", default_params(), false});
+        step(!assign_app_to_profile(gui, 3, game) && !assign_app_to_profile(gui, 9, game) &&
+             !assign_app_to_profile(gui, 2, L""));
+        close(gui);
     }
     UnregisterClassW(owner_class.lpszClassName, owner_class.hInstance);
     std::cout << (ok ? "PASS" : "FAIL")
-              << ": modal app-profiles dialog; turning switching on and saving persists and "
-                 "resumes; cancel changes nothing; no display writes\n";
+              << ": adding an app saves, turns Follow apps on and pins other apps; opening a "
+                 "profile changes nothing for apps; tray choice turns switching off\n";
+    return ok;
+}
+
+// Reset and "Hold to compare" while an edit has not auto-saved yet. Real
+// trackbars stand in for the editor: the sliders are the model it reads.
+bool check_unsaved_edit_safety(const std::filesystem::path& root) {
+    WNDCLASSW owner_class{};
+    owner_class.lpfnWndProc = DefWindowProcW;
+    owner_class.hInstance = GetModuleHandleW(nullptr);
+    owner_class.lpszClassName = L"GammaChangerEditOwner";
+    if (!RegisterClassW(&owner_class)) return false;
+
+    FakeBackend backend;
+    GuiState gui(root, backend);
+    DisplayInfo display;
+    display.device_name = L"FAKE-DISPLAY";
+    display.stable_id = L"fake-screen";
+    gui.displays.push_back(display);
+    gui.active_display_index = 0;
+    CalibrationSettings reading;
+    reading.gamma = 1.20;
+    gui.profiles = {builtin_default_profile(), {L"reading", L"Reading", reading, true}};
+    gui.active_preset = 1;
+    gui.window = CreateWindowExW(0, owner_class.lpszClassName, L"Owner", WS_OVERLAPPED, 0, 0, 200,
+                                 200, nullptr, nullptr, owner_class.hInstance, nullptr);
+    if (!gui.window) return false;
+    SetWindowLongPtrW(gui.window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&gui));
+    const auto child = [&](const wchar_t* class_name, int id, DWORD style) {
+        return CreateWindowExW(0, class_name, L"", WS_CHILD | style, 0, 0, 100, 20, gui.window,
+                               reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+                               owner_class.hInstance, nullptr);
+    };
+    gui.gamma_slider = child(TRACKBAR_CLASSW, kGammaSlider, 0);
+    gui.brightness_slider = child(TRACKBAR_CLASSW, kBrightnessSlider, 0);
+    gui.contrast_slider = child(TRACKBAR_CLASSW, kContrastSlider, 0);
+    gui.r_gain_slider = child(TRACKBAR_CLASSW, kRGainSlider, 0);
+    gui.g_gain_slider = child(TRACKBAR_CLASSW, kGGainSlider, 0);
+    gui.b_gain_slider = child(TRACKBAR_CLASSW, kBGainSlider, 0);
+    for (const auto& binding : adjustment_bindings(gui)) {
+        if (!binding.slider) return false;
+        SendMessageW(binding.slider, TBM_SETRANGEMIN, FALSE, setting_to_steps(binding.range.minimum));
+        SendMessageW(binding.slider, TBM_SETRANGEMAX, TRUE, setting_to_steps(binding.range.maximum));
+    }
+    HWND compare = child(L"BUTTON", kBeforeAfter, BS_OWNERDRAW);
+    if (!compare || !SetWindowSubclass(compare, compare_proc, 1, 0)) return false;
+
+    bool ok = true;
+    int step_number = 0;
+    const auto step = [&](bool condition) {
+        ++step_number;
+        if (!condition) std::cout << "  unsaved edit step " << step_number << " failed\n";
+        ok &= condition;
+    };
+    const auto shows = [&](const CalibrationSettings& settings) {
+        return backend.current.channel == build_ramp(settings).channel;
+    };
+    const auto open_profile = [&](std::size_t index) {
+        std::wstring error;
+        gui.active_preset = index;
+        const CalibrationSettings settings = gui.profiles[index].settings;
+        const bool applied = gui.controller.apply_and_save(display, settings, error);
+        set_params_to_controls(gui, settings);
+        mark_committed(gui, settings);
+        gui.session.clear_undo();
+        return applied;
+    };
+    const auto drag_gamma = [&](double value) {
+        SendMessageW(gui.gamma_slider, TBM_SETPOS, TRUE, setting_to_steps(value));
+        mark_changed(gui);
+    };
+    const auto timer_pending = [&](UINT timer) { return KillTimer(gui.window, timer) != FALSE; };
+
+    // Reset before the edit auto-saved: Ctrl+Z brings the edit back, not the
+    // older saved value.
+    step(open_profile(1));
+    drag_gamma(1.50);
+    CalibrationSettings edited = reading;
+    edited.gamma = 1.50;
+    step(gui.session.dirty && settings_equal(params_from_sliders(gui), edited));
+    reset_selected(gui);
+    step(!gui.session.dirty && settings_equal(params_from_sliders(gui), default_params()) &&
+         settings_equal(gui.profiles[1].settings, default_params()) && shows(default_params()));
+    undo_profile_switch(gui);
+    step(!gui.session.dirty && settings_equal(params_from_sliders(gui), edited) &&
+         settings_equal(gui.profiles[1].settings, edited) && shows(edited));
+
+    // A neutral profile with an unsaved edit: Reset still resets, and undoes.
+    step(open_profile(0));
+    drag_gamma(1.30);
+    edited = default_params();
+    edited.gamma = 1.30;
+    reset_selected(gui);
+    step(gui.session.profile_switch_undo_available &&
+         settings_equal(params_from_sliders(gui), default_params()));
+    undo_profile_switch(gui);
+    step(settings_equal(params_from_sliders(gui), edited) &&
+         settings_equal(gui.profiles[0].settings, edited) && shows(edited));
+    // Nothing to reset and nothing pending: no undo step is created.
+    step(open_profile(0));
+    gui.profiles[0].settings = default_params();
+    step(open_profile(0));
+    reset_selected(gui);
+    step(!gui.session.profile_switch_undo_available);
+
+    // Hold to compare with a pending edit. If the display rejects the neutral
+    // preview, the edit keeps its preview and auto-save timers.
+    drag_gamma(1.40);
+    edited = default_params();
+    edited.gamma = 1.40;
+    backend.fail_writes = true;
+    SendMessageW(compare, WM_LBUTTONDOWN, MK_LBUTTON, 0);
+    step(!gui.session.comparing_original && gui.session.dirty && timer_pending(kPreviewTimer) &&
+         timer_pending(kAutoSaveTimer));
+    SendMessageW(compare, WM_LBUTTONUP, 0, 0);
+    backend.fail_writes = false;
+
+    // When it works: neutral while held with the timers paused, then back to
+    // the edit with auto-save pending again.
+    mark_changed(gui);
+    SendMessageW(compare, WM_LBUTTONDOWN, MK_LBUTTON, 0);
+    step(gui.session.comparing_original);
+    step(shows(default_params()));
+    step(!timer_pending(kPreviewTimer));
+    step(!timer_pending(kAutoSaveTimer));
+    SendMessageW(compare, WM_LBUTTONUP, 0, 0);
+    step(!gui.session.comparing_original && gui.session.dirty && shows(edited) &&
+         timer_pending(kAutoSaveTimer));
+
+    KillTimer(gui.window, kPreviewTimer);
+    KillTimer(gui.window, kForegroundProfileTimer);
+    DestroyWindow(gui.window);
+    UnregisterClassW(owner_class.lpszClassName, owner_class.hInstance);
+    std::cout << (ok ? "PASS" : "FAIL")
+              << ": Reset undo restores an edit that had not auto-saved; a failed compare "
+                 "preview keeps the pending edit's timers; compare pauses and resumes them\n";
     return ok;
 }
 
@@ -451,9 +479,8 @@ int main() {
     INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES};
     if (!InitCommonControlsEx(&controls)) return 1;
     bool ok = check_application_switching(data / L"assignments");
-    ok = check_assign_dialog() && ok;
-    ok = check_profiles_dialog() && ok;
-    ok = check_profiles_dialog_commit(data / L"dialog") && ok;
+    ok = check_app_assignment(data / L"glue") && ok;
+    ok = check_unsaved_edit_safety(data / L"edits") && ok;
     ok = check_schedule(data) && ok;
     std::error_code cleanup_error;
     std::filesystem::remove_all(data, cleanup_error);

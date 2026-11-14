@@ -31,6 +31,7 @@
 #include <cmath>
 #include <cwchar>
 #include <filesystem>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <string>
@@ -58,14 +59,11 @@ constexpr UINT kForegroundProfileMessage = WM_APP + 6;
 constexpr UINT kTrayId = 1;
 constexpr UINT kTrayShowCommand = 1;
 constexpr UINT kTrayExitCommand = 2;
-constexpr UINT kTrayAutoSwitchCommand = 3;
-constexpr UINT kTrayAutoPauseCommand = 4;
-constexpr UINT kTrayAppRulesCommand = 5;
+constexpr UINT kTrayFollowAppsCommand = 3;
 constexpr UINT kTrayProfileCommandBase = 100;
+constexpr int kAppChipIdBase = 2000;
 
 enum ControlId : int {
-    kTitleLabel = 100,
-    kSubtitleLabel = 101,
     kDisplayCombo = 102,
     kRefreshButton = 103,
     kGammaSlider = 104,
@@ -80,27 +78,26 @@ enum ControlId : int {
     kRGainValue = 113,
     kGGainValue = 114,
     kBGainValue = 115,
-    kApplyButton = 116,
+    kApplyButton = 116,   // "Retry save": shown only after a failed save
     kResetButton = 117,
     kStatusLabel = 118,
     kPresetSave = 124,
     kDisplayCaption = 127,
     kPresetCaption = 128,
-    kMainHeading = 129,
-    kMainSubtitle = 130,
-    kToneHeading = 131,
-    kColorHeading = 132,
+    kMainHeading = 129,   // name of the selected profile
+    kMainSubtitle = 130,  // where that profile is used
     kStartupToggle = 133,
-    kPreviewHeading = 134,
-    kToneCaption = 136,
-    kColorCaption = 137,
     kDisplayStatus = 138,
     kProfileRename = 139,
     kBeforeAfter = 140,
-    kAutoSwitchToggle = 141,
-    kAppRules = 143,
+    kAutoSwitchToggle = 141,  // "Follow apps"
     kAutoSwitchStatus = 144,
-    kAppsCaption = 145,
+    kProfileMenu = 146,
+    kAppsHeading = 147,
+    kAppsNote = 148,
+    kAddApp = 149,
+    kOtherApps = 150,
+    kAppOverflow = 151,
 };
 
 enum class StatusTone {
@@ -110,25 +107,38 @@ enum class StatusTone {
     error,
 };
 
+// One app that switches to the selected profile on the selected display.
+struct AppChip {
+    std::wstring path;
+    std::wstring label;   // executable file name
+    bool enabled = true;  // false: legacy assignment whose rules are all off
+    int width = 0;        // device pixels at the current DPI
+};
+
+// Everything the Apps card shows for the selected profile. Rebuilt by
+// refresh_app_chips(); geometry and painting only read it.
+struct AppChipModel {
+    std::vector<AppChip> chips;
+    bool following = false;    // Follow apps is on
+    bool show_other = false;   // the "All other apps" chip is offered
+    bool holds_other = false;  // other apps use this profile
+    int add_width = 0;
+    int other_width = 0;
+    int overflow_width = 0;
+};
+
 struct GuiState {
     GuiState() = default;
     GuiState(std::filesystem::path data_root, DisplayRampBackend& backend)
         : ramp_backend(backend), store(std::move(data_root)) {}
 
     HWND window = nullptr;
-    HWND title = nullptr;
-    HWND subtitle = nullptr;
     HWND display_combo = nullptr;
     HWND refresh_button = nullptr;
     HWND display_caption = nullptr;
     HWND preset_caption = nullptr;
     HWND main_heading = nullptr;
     HWND main_subtitle = nullptr;
-    HWND tone_heading = nullptr;
-    HWND color_heading = nullptr;
-    HWND preview_heading = nullptr;
-    HWND tone_caption = nullptr;
-    HWND color_caption = nullptr;
     HWND display_status = nullptr;
     HWND startup_button = nullptr;
     HWND gamma_label = nullptr;
@@ -149,21 +159,24 @@ struct GuiState {
     HWND r_gain_value = nullptr;
     HWND g_gain_value = nullptr;
     HWND b_gain_value = nullptr;
-    HWND apply_button = nullptr;
+    HWND apply_button = nullptr;         // "Retry save", hidden unless a save failed
     HWND reset_button = nullptr;
     HWND status = nullptr;
     std::vector<HWND> preset_buttons;
     HWND preset_save = nullptr;
     HWND profile_rename = nullptr;
     HWND before_after_button = nullptr;
-    HWND apps_caption = nullptr;
-    HWND auto_switch_button = nullptr;   // "Switch automatically" toggle row
-    HWND app_rules_button = nullptr;     // "Manage apps..."
+    HWND profile_menu_button = nullptr;  // rename / duplicate / delete
+    HWND auto_switch_button = nullptr;   // "Follow apps" toggle row
     HWND auto_switch_status = nullptr;
+    HWND apps_heading = nullptr;
+    HWND apps_note = nullptr;
+    HWND add_app_button = nullptr;
+    HWND other_apps_button = nullptr;
+    HWND app_overflow_button = nullptr;
+    std::vector<HWND> app_chip_buttons;  // one per AppChipModel::chips entry
     HFONT normal_font = nullptr;
-    HFONT title_font = nullptr;
     HFONT heading_font = nullptr;
-    HFONT panel_font = nullptr;
     HFONT section_font = nullptr;
     HFONT caption_font = nullptr;
     HFONT small_font = nullptr;
@@ -180,8 +193,13 @@ struct GuiState {
     bool live_preview = true;
     bool startup_enabled = false;
     bool startup_launch = false;
+    // The real app reads and repairs its "Start with Windows" entry. Tools and
+    // tests that reuse the window must leave the user's entry alone: a repair
+    // from their executable would register that executable to start instead.
+    bool manage_startup_entry = true;
     HWND hovered_profile = nullptr;
     HWND hovered_numeric = nullptr;
+    HWND hovered_control = nullptr;  // buttons and chips in the work area
     bool profile_keyboard_focus = false;
     StatusTone status_tone = StatusTone::success;
     std::vector<DisplayInfo> displays;
@@ -207,10 +225,16 @@ struct GuiState {
     bool foreground_reapply_requested = false;
     bool foreground_evaluation_pending = false;
     DWORD foreground_lookup_error = ERROR_SUCCESS;
-    bool auto_switch_paused = false;
-    bool app_rules_dialog_open = false;
-    std::wstring foreground_application;
+    std::wstring foreground_application;  // last app in front other than this one
     AppProfileRuntime app_runtime{controller};
+    AppChipModel apps;                        // apps of the selected profile
+    std::vector<std::wstring> profile_notes;  // sidebar row annotations ("2 apps")
+    // Per display: the profile selected before the current one. Lets the first
+    // app assignment keep other apps on what the desktop showed before.
+    std::unordered_map<std::wstring, std::wstring> previous_profile_ids;
+    std::unordered_map<std::wstring, HICON> app_icons;
+    // Source of the "Add app" list; tests and the snapshot tool inject samples.
+    std::function<std::vector<RunningApplication>()> running_apps;
 };
 
 // One row of the adjustment panel: an edit box mirroring a slider, its valid
@@ -253,17 +277,29 @@ struct UiGeometry {
     RECT profile_list{};  // visible viewport of the profile rows
     int profile_row_height = 0;
     int profile_row_stride = 0;
-    int apps_top = 0;            // APPS caption
-    int sidebar_divider_y = 0;   // above "Start with Windows"
+    int automation_top = 0;  // divider above "Follow apps" / "Start with Windows"
     // Work area
     int main_left = 0;
     int main_right = 0;
-    RECT curve_card{};
-    RECT curve_plot{};
-    RECT tone_card{};
-    RECT color_card{};
-    int footer_top = 0;
+    RECT header_title{};
+    RECT header_subtitle{};
+    RECT compare_button{};
+    RECT reset_button{};
+    RECT menu_button{};
+    RECT editor_card{};   // tone curve + the six adjustments
+    RECT curve_plot{};    // square plot inside the editor card
+    int group_divider_y = 0;  // hairline between tone and colour rows
+    int controls_left = 0;
+    int controls_right = 0;
     std::array<AdjustmentRowGeometry, 6> rows{};  // index = adjustment_bindings() order
+    RECT apps_card{};
+    RECT apps_heading{};
+    std::vector<RECT> chip_rects;  // per AppChipModel chip; empty = folded into overflow
+    RECT add_app{};
+    RECT other_apps{};
+    RECT overflow{};
+    int hidden_chips = 0;
+    int status_top = 0;
 };
 
 UiGeometry ui_geometry(const GuiState& gui);
@@ -303,6 +339,7 @@ HWND make_control(DWORD style, LPCWSTR class_name, LPCWSTR text, HWND parent,
 HWND make_control_ex(DWORD ex_style, DWORD style, LPCWSTR class_name, LPCWSTR text,
                      HWND parent, int id, int x, int y, int width, int height);
 void ensure_profile_buttons(GuiState& gui);
+void ensure_app_chip_buttons(GuiState& gui);
 void layout_controls(GuiState& gui, int width, int height);
 void layout_controls_for_current_size(GuiState& gui);
 void apply_font(HWND control, HFONT font);
@@ -338,13 +375,37 @@ void schedule_automatic_profiles(GuiState& gui, bool force = false);
 void evaluate_automatic_profiles(GuiState& gui, bool force = false);
 void apply_application_profiles(GuiState& gui, const std::wstring& path, bool force = false);
 bool restore_automatic_profiles(GuiState& gui);
-bool pause_automatic_profiles(GuiState& gui);
 void toggle_automatic_profiles(GuiState& gui);
-void resume_automatic_profiles(GuiState& gui);
+bool set_automatic_profiles_enabled(GuiState& gui, bool enabled);
 void update_automatic_profile_controls(GuiState& gui);
-void bind_application_profile(GuiState& gui, std::size_t profile_index);
-void show_application_rules(GuiState& gui);
+// Apps of the selected profile (the chips) and the per-row sidebar notes.
+void refresh_app_chips(GuiState& gui, bool remeasure = false);
+bool assign_app_to_profile(GuiState& gui, std::size_t profile_index, const std::wstring& path);
+bool unassign_app(GuiState& gui, const std::wstring& path);
+bool use_profile_for_other_apps(GuiState& gui, std::size_t profile_index);
+// Selecting another profile must not change what unlisted apps get while
+// Follow apps is on: pins the current profile for them if nothing is pinned.
+void keep_other_apps_profile(GuiState& gui);
+// The "Add app" menu: running apps (last used first), then Browse. Built
+// separately from being shown so its contents can be checked without a screen.
+constexpr UINT kAddAppBrowseCommand = 1;
+constexpr UINT kAddAppFirstCommand = 100;
+struct AddAppMenu {
+    HMENU menu = nullptr;             // caller destroys
+    std::vector<std::wstring> paths;  // command kAddAppFirstCommand + index
+};
+AddAppMenu build_add_app_menu(const GuiState& gui);
+void show_add_app_menu(GuiState& gui);
+void show_app_chip_menu(GuiState& gui, std::size_t chip_index);
+void show_app_overflow_menu(GuiState& gui);
+// Rename / Duplicate / Delete for one profile (right-click and the header's
+// "more" button share it).
+void show_profile_menu(GuiState& gui, std::size_t index, POINT screen_point,
+                       UINT alignment = TPM_LEFTALIGN);
 void remove_application_profile_rules(GuiState& gui, const std::wstring& profile_id);
+HICON app_icon(GuiState& gui, const std::wstring& path);
+void release_app_icons(GuiState& gui);
+std::wstring executable_display_name(const std::wstring& path);
 void scroll_profile_into_view(GuiState& gui, std::size_t index);
 bool persist_presets(GuiState& gui);
 void begin_profile_rename(GuiState& gui, std::size_t index);
@@ -364,5 +425,13 @@ LRESULT CALLBACK display_combo_proc(HWND combo, UINT message, WPARAM wparam,
 LRESULT CALLBACK profile_proc(HWND item, UINT message, WPARAM wparam,
                               LPARAM lparam, UINT_PTR subclass_id,
                               DWORD_PTR ref_data);
+// "Hold to compare" (subclass of that button; chains to hover_button_proc).
+LRESULT CALLBACK compare_proc(HWND button, UINT message, WPARAM wparam, LPARAM lparam,
+                              UINT_PTR subclass_id, DWORD_PTR ref_data);
+// Hover tracking for owner-drawn buttons in the work area; chips also map
+// Delete to "remove this app".
+LRESULT CALLBACK hover_button_proc(HWND button, UINT message, WPARAM wparam,
+                                   LPARAM lparam, UINT_PTR subclass_id,
+                                   DWORD_PTR ref_data);
 
 }  // namespace gamma_changer

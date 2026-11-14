@@ -235,6 +235,42 @@ bool check_assignments() {
     return ok;
 }
 
+bool check_profile_view() {
+    const std::wstring screen = L"screen-a";
+    AppProfileConfig config;
+    config.rules = {
+        {L"C:\\Games\\Game.exe", screen, L"gaming", true, L"rule-1", L""},
+        {L"C:\\Apps\\Browser.exe", screen, L"reading", true, L"rule-2", L""},
+        {L"C:\\Games\\Other.exe", screen, L"gaming", false, L"rule-3", L""},
+        {L"C:\\Games\\Game.exe", L"screen-b", L"reading", true, L"rule-4", L""},
+    };
+    const auto gaming = apps_using_profile(config, screen, L"gaming");
+    bool ok = expect(gaming.size() == 2 && gaming[0].executable_path == L"C:\\Games\\Game.exe" &&
+                         gaming[0].enabled && !gaming[1].enabled,
+                     L"a profile lists its own apps on one display, legacy disabled ones marked");
+    ok &= expect(apps_using_profile(config, screen, L"night").empty() &&
+                     apps_using_profile(config, L"screen-b", L"gaming").empty(),
+                 L"other profiles and other displays must not leak into a profile's apps");
+
+    const std::vector<Profile> profiles{{L"builtin", L"Default", {}, true},
+                                        {L"reading", L"Reading", {}, true},
+                                        {L"gaming", L"Gaming", {}, true},
+                                        {L"draft", L"Draft", {}, false}};
+    ok &= expect(default_other_apps_profile(profiles, L"gaming", L"reading", L"", L"builtin") ==
+                     L"reading",
+                 L"other apps keep the profile the display shows");
+    ok &= expect(default_other_apps_profile(profiles, L"gaming", L"gaming", L"reading",
+                                            L"builtin") == L"reading",
+                 L"when the shown profile gets the app, other apps keep the previous one");
+    ok &= expect(default_other_apps_profile(profiles, L"gaming", L"gaming", L"draft",
+                                            L"builtin") == L"builtin",
+                 L"an unsaved or unknown previous profile falls back to the built-in default");
+    ok &= expect(default_other_apps_profile(profiles, L"builtin", L"builtin", L"", L"builtin")
+                     .empty(),
+                 L"no candidate other than the assigned profile means no other-apps profile");
+    return ok;
+}
+
 #if defined(_WIN32)
 
 struct TemporaryDirectory {
@@ -478,6 +514,7 @@ int main() {
     ok &= check_binding();
     ok &= check_fallback_defaults();
     ok &= check_assignments();
+    ok &= check_profile_view();
 #if defined(_WIN32)
     ok &= check_store();
     ok &= check_window_identity();

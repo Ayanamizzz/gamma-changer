@@ -44,7 +44,6 @@ target_link_libraries(gamma_core PUBLIC user32 gdi32 shell32 advapi32 dwmapi)
 # ---------------------------------------------------------------------------
 add_library(gamma_ui STATIC
     src/application.cpp
-    src/ui/app_dialogs.cpp
     src/ui/app_profiles.cpp
     src/ui_rendering.cpp
     src/ui/controls.cpp
@@ -86,7 +85,7 @@ gamma_core_test(calibration_transaction_check)
 gamma_core_test(app_profile_rules_check)
 gamma_core_test(app_profile_runtime_check)
 
-# Drives the real dialogs and window procedure (resources needed).
+# Drives the real window procedure and app-assignment glue (resources needed).
 add_executable(foreground_profile_check src/foreground_profile_check.cpp ${gamma_resources})
 target_link_libraries(foreground_profile_check PRIVATE gamma_ui)
 add_test(NAME foreground_profile_check COMMAND foreground_profile_check)

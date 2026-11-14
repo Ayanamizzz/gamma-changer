@@ -78,6 +78,24 @@ bool unassign_app_profile(AppProfileConfig& config, const std::wstring& executab
 // can still offer displays that are currently disconnected.
 std::vector<std::wstring> app_profile_display_ids(const AppProfileConfig& config);
 
+// The apps that switch to `profile_id` on `display_id`: the assignment view
+// filtered to one profile, in rule order.
+std::vector<AppAssignment> apps_using_profile(const AppProfileConfig& config,
+                                              const std::wstring& display_id,
+                                              const std::wstring& profile_id);
+
+// Which profile unlisted apps should keep when `assigned_profile_id` gets an
+// app on a display that has no "other apps" profile yet. Preference order: the
+// profile the display shows now, the one it showed before that, the built-in
+// default; the first that is saved and is not the assigned profile itself.
+// Empty when nothing qualifies (unlisted apps then keep the display's own
+// calibration).
+std::wstring default_other_apps_profile(const std::vector<Profile>& profiles,
+                                        const std::wstring& assigned_profile_id,
+                                        const std::wstring& shown_profile_id,
+                                        const std::wstring& previous_profile_id,
+                                        const std::wstring& builtin_profile_id);
+
 // Remove both software bindings and unassigned-app defaults referencing a profile.
 std::size_t remove_app_profile_rules_for_profile(AppProfileConfig& config,
                                                 const std::wstring& profile_id);

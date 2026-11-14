@@ -201,6 +201,34 @@ std::vector<std::wstring> app_profile_display_ids(const AppProfileConfig& config
     return ids;
 }
 
+std::vector<AppAssignment> apps_using_profile(const AppProfileConfig& config,
+                                              const std::wstring& display_id,
+                                              const std::wstring& profile_id) {
+    std::vector<AppAssignment> apps = app_assignments(config, display_id);
+    apps.erase(std::remove_if(apps.begin(), apps.end(),
+                              [&](const AppAssignment& app) {
+        return app.profile_id != profile_id;
+    }), apps.end());
+    return apps;
+}
+
+std::wstring default_other_apps_profile(const std::vector<Profile>& profiles,
+                                        const std::wstring& assigned_profile_id,
+                                        const std::wstring& shown_profile_id,
+                                        const std::wstring& previous_profile_id,
+                                        const std::wstring& builtin_profile_id) {
+    for (const std::wstring* candidate :
+         {&shown_profile_id, &previous_profile_id, &builtin_profile_id}) {
+        if (candidate->empty() || *candidate == assigned_profile_id) continue;
+        const bool usable = std::any_of(profiles.begin(), profiles.end(),
+                                        [&](const Profile& profile) {
+            return profile.id == *candidate && profile.saved;
+        });
+        if (usable) return *candidate;
+    }
+    return {};
+}
+
 std::size_t remove_app_profile_rules_for_profile(AppProfileConfig& config,
                                                 const std::wstring& profile_id) {
     const std::size_t previous_count = config.rules.size() + config.fallback_profiles.size();

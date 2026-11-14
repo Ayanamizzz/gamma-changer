@@ -14,42 +14,31 @@ Adjust each display, save a profile, and let it follow the app in front.
 
 **[Download](https://github.com/Ayanamizzz/gamma-changer/releases/latest)** ·
 [Screenshots](#a-look-inside) · [Getting started](#getting-started) ·
-[App profiles](#app-profiles) · [Build from source](#build-from-source)
+[Follow apps](#follow-apps) · [Build from source](#build-from-source)
 
 </div>
 
 ## A look inside
 
-> **Development preview:** these screenshots and the app-profile instructions below describe the latest `main` branch. The current packaged release is **v2.6.2**, which uses the earlier interface.
+> **Development preview:** these screenshots and the instructions below describe the latest `main` branch. The current packaged release is **v2.6.2**, which uses the earlier interface.
 
-![Gamma Changer: dark sakura sidebar, profile list, tone-response curve, and separate Tone and Color balance cards](docs/images/main-window.png)
+![Gamma Changer with the Gaming profile open: profile list on the left, a square tone curve beside six sliders, and the apps that switch to the profile underneath](docs/images/main-window.png)
 
-<table>
-  <tr>
-    <th align="left">Manage apps</th>
-    <th align="left">Choose an app and a profile</th>
-  </tr>
-  <tr>
-    <td width="51%"><img src="docs/images/manage-apps.png" alt="App and Profile assignments, an automatic-switching checkbox, and the Other apps use setting"></td>
-    <td width="49%"><img src="docs/images/choose-app.png" alt="Sample running apps, a Browse button, and a profile selector in one dialog"></td>
-  </tr>
-  <tr>
-    <td>Add, change, or remove assignments. Save together; Cancel discards the draft.</td>
-    <td>Pick a running app or browse for its executable, then choose its profile.</td>
-  </tr>
-</table>
+Everything happens in this one window. The profile you open fills the page: its tone curve, its six adjustments, and the apps that switch to it.
 
-The app lists in the dialog screenshots use sample data.
+![The Reading profile, used for chrome.exe and for every app without its own profile](docs/images/other-apps.png)
+
+The app names in the screenshots are sample data.
 
 ## What it does
 
 | Feature | In use |
 | :--- | :--- |
-| **Tune each display** | Gamma, brightness, contrast, and individual red, green, and blue gain. Sliders and numeric fields share the same 0.01 steps. |
-| **See changes live** | A tone-response curve shows the adjustment. Changes preview live and save automatically after 0.7 seconds. |
-| **Keep your profiles** | Create, rename, duplicate, and delete profiles. The sidebar shows more rows as the window gets taller. |
-| **Follow your apps** | Assign a profile to an app on each display, with a separate choice for all other apps. |
-| **Keep manual control** | Choosing a profile by hand pauses automatic switching. One click resumes it. |
+| **Tune each display** | Gamma, brightness, contrast, and individual red, green, and blue gain. Sliders and numeric fields share the same 0.01 steps, and each slider fills from its neutral value, so you can see at a glance what a profile changes. |
+| **See changes live** | A tone curve shows the adjustment. Changes preview live and save automatically after 0.7 seconds. |
+| **Compare** | Hold **Hold to compare** to see the display without the profile; release to return. |
+| **Keep your profiles** | Create, rename, duplicate, and delete profiles. The sidebar shows which apps use each one. |
+| **Follow your apps** | Add an app to a profile in two clicks. One profile covers every other app. |
 | **Stay available** | Minimize to the tray, optionally start with Windows, and restore saved calibration after display changes or system resume. |
 
 The interface keeps its sakura wallpaper and purple accent, with antialiased controls and Per-Monitor V2 DPI support.
@@ -65,50 +54,53 @@ Each release includes the ZIP, a standalone EXE, and `SHA256SUMS.txt`. To try th
 ## Getting started
 
 1. Choose a display in the sidebar.
-2. Adjust **Tone** and **Color balance** with the sliders or numeric fields. Changes preview live and save automatically.
-3. Click **+** beside **PROFILES** to create a profile. Right-click a profile to rename, duplicate, delete, or use it for an app. The Delete key also removes the focused profile.
-4. Hold **Hold to compare** while an unsaved live preview is available to compare it with the previous display state. **Restore defaults** returns the selected display to a neutral LUT.
+2. Click a profile to open it, then move the sliders or type a value. Changes preview live and save into the profile automatically.
+3. Click **+** beside **Profiles** to create a profile and type its name. To rename one later, double-click it or press F2. The **⋯** button at the top right, or a right-click on the profile, also offers Duplicate and Delete.
+4. **Hold to compare** shows the display without the profile while you hold it. **Reset** returns the open profile to neutral; Ctrl+Z undoes a reset or a profile switch.
 
-Minimizing keeps the app in the tray. Click the tray icon to reopen it, or right-click for profile and switching controls. Closing the main window exits the app.
+Double-click a number to return that adjustment to neutral. Minimizing keeps the app in the tray. Click the tray icon to reopen it, or right-click it to choose how profiles are used. Closing the main window exits the app.
 
-## App profiles
+## Follow apps
 
-Use **Gaming** for a game, **Reading** for a browser, or any saved profile you choose. The profile changes the whole display, including other visible windows.
+Use **Gaming** for a game, **Reading** for a browser, or any profile you choose. A profile changes the whole display, including other visible windows.
 
-### One switch, three states
+### Give a profile its apps
 
-| Switch color | State | What to do |
-| :--- | :--- | :--- |
-| Purple | On | Profiles follow the foreground app. |
-| Gray | Off | Click **Switch automatically** to turn it on. |
-| Amber | Paused after a manual profile choice or reset | Click the same switch to resume. |
+1. Open the profile.
+2. Click **Add app** and pick the app from the list. Apps with an open window are listed, the one you used last first. **Browse for an app…** covers anything that is not running.
 
-The line below the switch shows the current assignment, such as `game.exe → Gaming`.
+That is all: the choice saves at once and **Follow apps** turns on. Each app shows as a chip on its profile. Click the cross to remove it, or click the chip to move it to another profile.
 
-### Manage assignments
+### Every other app
 
-Open **Manage apps…** in the sidebar:
+One profile carries the **All other apps** chip. Apps without their own profile use it. To hand it to another profile, open that profile and click **All other apps** there.
 
-1. **Add app…** lists apps with an open window, with the last active app first and preselected. Choose the app and a profile, then **OK**. Use **Browse…** for an app that is not running.
-2. **Change…**, or double-click a row, changes the app or its profile. **Remove**, or Delete, removes its assignment.
-3. **Other apps use** chooses the desktop calibration or a saved profile for unlisted apps.
-4. With multiple displays, **Display** selects the list to edit. The selector is hidden when there is only one display choice; disconnected displays retain their assignments.
+When you add your first app, Gamma Changer keeps the other apps on the profile your desktop was using, and says so in the status line.
 
-Adding an app checks **Switch profiles automatically** in the draft. You can uncheck it before saving. **Save** applies the changes together; **Cancel** discards them.
+### One switch, two states
 
-For a shortcut, right-click a profile and choose **Use for an app…**. Pick the app and confirm to save that assignment directly.
+| Follow apps | What happens |
+| :--- | :--- |
+| On | An app with its own profile gets that profile while it is in front. Every other app gets the **All other apps** profile. |
+| Off | The selected profile is used for everything. |
+
+The line under the switch shows what the last app you used gets, such as `chrome.exe uses Reading`.
+
+Opening a profile to look at it or tune it does not change what your apps get. While the Gamma Changer window is in front, the display shows the open profile so you can see what you are editing.
+
+The tray menu offers the same choice from outside the window: **Follow apps**, or **Always use** one profile. Choosing a profile there turns Follow apps off and keeps that profile until you say otherwise.
 
 <details>
-<summary><strong>Matching, manual control, and older configurations</strong></summary>
+<summary><strong>Matching, displays, and older configurations</strong></summary>
 
 - Apps match by full executable path. Two installations of the same `.exe` can use different profiles. For games, select the game executable rather than its launcher.
-- If Windows prevents reading an app's location, the picker shows the error. Use **Browse…** to select the executable yourself.
-- While the Gamma Changer editor is in front, switching pauses and shows the desktop calibration. Manual profile selection and restoring defaults also pause switching.
-- Unlisted apps follow **Other apps use**. Choosing desktop calibration restores the exact desktop ramp captured before automatic switching. Turning switching off or exiting restores it too.
+- If Windows prevents reading an app's location, the app is listed but cannot be picked. Use **Browse for an app…** to select the executable yourself.
+- Apps and the **All other apps** profile are kept per display. The window shows the selected display; a disconnected display keeps its choices until it returns.
+- Turning Follow apps off, or exiting, puts the selected profile back on the display.
 - Focus changes are coalesced over 150 ms. Returning to an app reapplies its profile because the app may have reset the display ramp.
-- To adjust an app's appearance, edit its assigned profile directly. Every app using that profile shares the change; there is no separate per-app parameter editor.
-- Renaming a profile keeps its assignments. Deleting one removes its assignments.
-- Older configurations keep the same file format. If an app has several old rules, the list shows the effective one, or marks it off if all are disabled. Editing that app merges its rules for the selected display; untouched apps retain their existing rules.
+- To adjust an app's appearance, edit its profile. Every app using that profile shares the change.
+- Renaming a profile keeps its apps. Deleting one removes them from it.
+- Older configurations keep the same file format. If an app has several old rules, its chip follows the effective one, and a chip whose rules are all disabled is shown dimmed until you turn it on from its menu. A display that had no profile for other apps keeps using the selected profile for them, and the first time you open a different profile that choice is pinned so it no longer moves with the selection.
 
 </details>
 
@@ -149,19 +141,19 @@ CI builds Release and Debug with MSVC `/W4 /WX` and runs six CTest groups. Displ
 <details>
 <summary><strong>UI snapshots and project structure</strong></summary>
 
-Generate PNG previews of the main window and both app dialogs:
+Generate PNG previews of the main window in its main states:
 
 ```powershell
 .\build\vs2022-x64\Release\gamma_ui_snapshot.exe .\build\snapshots
 ```
 
-The tool uses temporary profile storage, a fake display backend, and sample app lists for the dialogs.
+The tool uses temporary profile storage, a fake display backend, and sample app lists.
 
 ```text
 assets/       Embedded wallpaper and icon
 include/      Core types, services, and UI rendering helpers
 src/          Calibration, persistence, runtime, and checks
-src/ui/       Main window, controls, layouts, and app dialogs
+src/ui/       Main window, controls, layout, painting, and app assignment
 src/tools/    UI snapshot utility
 docs/         Screenshots, architecture proposals, and release notes
 ```

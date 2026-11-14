@@ -42,27 +42,8 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         return 0;
     case kProfileContextMessage:
         if (gui) {
-            const std::size_t index = static_cast<std::size_t>(wparam);
-            if (index >= gui->profiles.size()) return 0;
-            const bool builtin = gui->profiles[index].id == kBuiltinProfileId;
-            HMENU menu = CreatePopupMenu();
-            AppendMenuW(menu, MF_STRING | (builtin ? MF_GRAYED : MF_ENABLED), 1, L"Rename");
-            AppendMenuW(menu, MF_STRING | MF_ENABLED, 2, L"Duplicate");
-            const bool can_bind = gui->profile_store_available && selected_display(*gui) &&
-                                  gui->profiles[index].saved;
-            AppendMenuW(menu, MF_STRING | (can_bind ? MF_ENABLED : MF_GRAYED), 4,
-                        L"Use for an app\u2026");
-            AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(menu, MF_STRING | (builtin ? MF_GRAYED : MF_ENABLED), 3, L"Delete");
-            const int x = GET_X_LPARAM(lparam);
-            const int y = GET_Y_LPARAM(lparam);
-            const UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY,
-                                                x, y, 0, window, nullptr);
-            DestroyMenu(menu);
-            if (command == 1) begin_profile_rename(*gui, index);
-            else if (command == 2) duplicate_profile(*gui, index);
-            else if (command == 3) delete_preset(*gui, index);
-            else if (command == 4) bind_application_profile(*gui, index);
+            show_profile_menu(*gui, static_cast<std::size_t>(wparam),
+                              POINT{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
         }
         return 0;
     case WM_CREATE: {
@@ -82,17 +63,19 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         INITCOMMONCONTROLSEX common{sizeof(common), ICC_BAR_CLASSES | ICC_LISTVIEW_CLASSES};
         InitCommonControlsEx(&common);
         create_controls(*current);
-        std::wstring startup_error;
-        StartupState startup = startup_state(startup_error);
-        if (startup == StartupState::enabled_stale_path) {
-            if (repair_startup_registration(startup_error)) {
-                startup = StartupState::enabled_current_path;
-                log_message(LogLevel::info, L"Updated the Windows startup path");
-            } else {
-                log_message(LogLevel::warning, startup_error);
+        if (current->manage_startup_entry) {
+            std::wstring startup_error;
+            StartupState startup = startup_state(startup_error);
+            if (startup == StartupState::enabled_stale_path) {
+                if (repair_startup_registration(startup_error)) {
+                    startup = StartupState::enabled_current_path;
+                    log_message(LogLevel::info, L"Updated the Windows startup path");
+                } else {
+                    log_message(LogLevel::warning, startup_error);
+                }
             }
+            current->startup_enabled = startup == StartupState::enabled_current_path;
         }
-        current->startup_enabled = startup == StartupState::enabled_current_path;
         InvalidateRect(current->startup_button, nullptr, FALSE);
         std::wstring profile_error;
         if (!current->profile_manager.load(profile_error)) {
@@ -205,17 +188,13 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             HWND control = reinterpret_cast<HWND>(lparam);
             SetBkMode(dc, TRANSPARENT);
             COLORREF color = ui::Theme::text;
-            if (control == gui->title) {
-                color = ui::Theme::sidebar_text;
-            } else if (control == gui->display_caption || control == gui->preset_caption ||
-                       control == gui->apps_caption) {
+            if (control == gui->display_caption || control == gui->preset_caption) {
                 color = ui::Theme::sidebar_muted;
-            } else if (control == gui->subtitle || control == gui->display_status ||
-                       control == gui->auto_switch_status) {
+            } else if (control == gui->display_status || control == gui->auto_switch_status) {
                 color = ui::Theme::sidebar_secondary;
             } else if (control == gui->main_subtitle || control == gui->status) {
                 color = ui::Theme::text_secondary;
-            } else if (control == gui->tone_caption || control == gui->color_caption) {
+            } else if (control == gui->apps_note) {
                 color = ui::Theme::text_muted;
             }
             SetTextColor(dc, color);
@@ -254,16 +233,59 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                 return 0;
             }
         }
+        if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) >= kAppChipIdBase) {
+            const std::size_t chip = static_cast<std::size_t>(LOWORD(wparam) - kAppChipIdBase);
+            if (chip >= gui->apps.chips.size()) return 0;
+            // The cross at the right end removes; the rest of the chip opens
+            // its menu (move to another profile, remove).
+            RECT rect{};
+            GetWindowRect(reinterpret_cast<HWND>(lparam), &rect);
+            const DWORD position = GetMessagePos();
+            const POINT cursor{GET_X_LPARAM(position), GET_Y_LPARAM(position)};
+            const int cross = MulDiv(26, static_cast<int>(GetDpiForWindow(window)), 96);
+            if (PtInRect(&rect, cursor) && cursor.x >= rect.right - cross) {
+                const std::wstring path = gui->apps.chips[chip].path;
+                unassign_app(*gui, path);
+            } else {
+                show_app_chip_menu(*gui, chip);
+            }
+            return 0;
+        }
         if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) >= kProfileIdBase &&
             static_cast<std::size_t>(LOWORD(wparam) - kProfileIdBase) < gui->profiles.size()) {
             select_preset(*gui, static_cast<std::size_t>(LOWORD(wparam) - kProfileIdBase));
             return 0;
         }
         if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) == kPresetSave) {
+            const std::size_t before = gui->profiles.size();
             create_profile_from_current(*gui);
+            // A new profile wants a name: start typing straight away.
+            if (gui->profiles.size() == before + 1 && gui->active_preset == before) {
+                PostMessageW(window, kProfileRenameMessage, static_cast<WPARAM>(before), 0);
+            }
+            return 0;
+        }
+        if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) == kProfileMenu) {
+            RECT rect{};
+            GetWindowRect(gui->profile_menu_button, &rect);
+            show_profile_menu(*gui, gui->active_preset, POINT{rect.right, rect.bottom + 2},
+                              TPM_RIGHTALIGN);
+            return 0;
+        }
+        if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) == kAddApp) {
+            show_add_app_menu(*gui);
+            return 0;
+        }
+        if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) == kOtherApps) {
+            use_profile_for_other_apps(*gui, gui->active_preset);
+            return 0;
+        }
+        if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) == kAppOverflow) {
+            show_app_overflow_menu(*gui);
             return 0;
         }
         if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) == kStartupToggle) {
+            if (!gui->manage_startup_entry) return 0;
             const bool enabling = !gui->startup_enabled;
             std::wstring error;
             if (!set_startup_enabled(enabling, error)) {
@@ -279,10 +301,6 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         }
         if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) == kAutoSwitchToggle) {
             toggle_automatic_profiles(*gui);
-            return 0;
-        }
-        if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) == kAppRules) {
-            show_application_rules(*gui);
             return 0;
         }
         if (LOWORD(wparam) == kDisplayCombo &&
@@ -384,8 +402,8 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
     case WM_GETMINMAXINFO: {
         auto* limits = reinterpret_cast<MINMAXINFO*>(lparam);
         const UINT dpi = GetDpiForWindow(window);
-        limits->ptMinTrackSize.x = MulDiv(960, static_cast<int>(dpi), 96);
-        limits->ptMinTrackSize.y = MulDiv(760, static_cast<int>(dpi), 96);
+        limits->ptMinTrackSize.x = MulDiv(940, static_cast<int>(dpi), 96);
+        limits->ptMinTrackSize.y = MulDiv(600, static_cast<int>(dpi), 96);
         return 0;
     }
     case WM_SYSCOMMAND:
@@ -406,10 +424,9 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         if (gui) gui->foreground_watcher.stop();
         if (gui) cancel_active_preview(*gui);
         remove_tray_icon(window);
+        if (gui) release_app_icons(*gui);
         if (gui && gui->normal_font) DeleteObject(gui->normal_font);
-        if (gui && gui->title_font) DeleteObject(gui->title_font);
         if (gui && gui->heading_font) DeleteObject(gui->heading_font);
-        if (gui && gui->panel_font) DeleteObject(gui->panel_font);
         if (gui && gui->section_font) DeleteObject(gui->section_font);
         if (gui && gui->caption_font) DeleteObject(gui->caption_font);
         if (gui && gui->small_font) DeleteObject(gui->small_font);

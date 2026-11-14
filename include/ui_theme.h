@@ -52,27 +52,39 @@ struct Theme {
     static constexpr COLORREF sidebar_selected = RGB(255, 255, 255);  // drawn translucent
     static constexpr COLORREF sidebar_divider = RGB(70, 58, 84);
     static constexpr COLORREF toggle_off = RGB(98, 86, 114);
+
+    // App chips
+    static constexpr COLORREF chip = RGB(238, 234, 252);
+    static constexpr COLORREF chip_hover = RGB(226, 220, 250);
+    static constexpr COLORREF chip_off = RGB(236, 233, 241);
+    static constexpr COLORREF plot_surface = RGB(250, 249, 253);
 };
 
 // Layout metrics in 96-DPI pixels; scale with Scale{dpi}(value).
 struct Metrics {
-    static constexpr int sidebar_width = 272;
-    static constexpr int sidebar_padding = 24;
-    static constexpr int main_gap = 32;
+    static constexpr int sidebar_width = 248;
+    static constexpr int sidebar_padding = 20;
+    static constexpr int main_gap = 28;
     static constexpr int card_radius = 12;
     static constexpr int control_radius = 8;
     static constexpr int control_height = 34;
-    static constexpr int footer_height = 72;
-    static constexpr int card_gap = 16;
-    static constexpr int adjustment_card_height = 180;
-    static constexpr int adjustment_row_stride = 40;
-    static constexpr int adjustment_label_width = 112;
-    static constexpr int value_box_width = 76;
+    static constexpr int header_height = 86;        // profile title, usage line, actions
+    static constexpr int status_height = 40;        // status line under the cards
+    static constexpr int card_gap = 14;
+    static constexpr int card_padding = 20;
+    static constexpr int adjustment_row_min = 34;
+    static constexpr int adjustment_row_max = 50;
+    static constexpr int adjustment_group_gap = 18;  // between tone and colour rows
+    static constexpr int adjustment_label_width = 84;
+    static constexpr int value_box_width = 68;
     static constexpr int value_box_height = 30;
     static constexpr int profile_row_height = 34;
     static constexpr int profile_row_gap = 2;
-    static constexpr int profile_row_inset = 12;   // row rect inset from sidebar edge
+    static constexpr int profile_row_inset = 10;   // row rect inset from sidebar edge
     static constexpr int profile_text_inset = 12;  // label inset inside the row
+    static constexpr int chip_height = 28;
+    static constexpr int chip_gap = 8;
+    static constexpr int chip_rows_max = 2;        // further apps fold into "+N more"
 };
 
 }  // namespace gamma_changer::ui

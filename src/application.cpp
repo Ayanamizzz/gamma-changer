@@ -35,26 +35,18 @@ void set_status(GuiState& gui, const std::wstring& text,
 
 void mark_changed(GuiState& gui) {
     gui.session.dirty = !settings_equal(params_from_sliders(gui), gui.session.committed_settings);
-    EnableWindow(gui.before_after_button, gui.session.dirty && gui.live_preview ? TRUE : FALSE);
+    ShowWindow(gui.apply_button, SW_HIDE);
     if (gui.session.dirty) {
-        SetWindowTextW(gui.apply_button, L"Auto-saving...");
-        EnableWindow(gui.apply_button, FALSE);
         SetTimer(gui.window, kAutoSaveTimer, kAutoSaveDelayMs, nullptr);
     } else {
         KillTimer(gui.window, kAutoSaveTimer);
-        SetWindowTextW(gui.apply_button, L"Saved");
-        EnableWindow(gui.apply_button, FALSE);
     }
     if (gui.session.profile_switch_undo_available) {
-        set_status(gui, L"Profile switched  |  Ctrl+Z restores previous adjustments",
+        set_status(gui, L"Profile switched. Ctrl+Z restores the previous adjustments",
                    StatusTone::success);
     } else {
-        set_status(gui,
-                   gui.session.dirty
-                       ? (gui.live_preview ? L"Previewing changes live  |  Auto-save in progress"
-                                           : L"Changes ready to apply  |  Auto-save in progress")
-                       : L"Ready",
-                   gui.session.dirty && gui.live_preview ? StatusTone::success : StatusTone::idle);
+        set_status(gui, gui.session.dirty ? L"Previewing. Saves automatically" : L"Ready",
+                   gui.session.dirty ? StatusTone::success : StatusTone::idle);
     }
     invalidate_preview_curve(gui);
     if (gui.live_preview) SetTimer(gui.window, kPreviewTimer, 80, nullptr);
@@ -65,15 +57,12 @@ void mark_committed(GuiState& gui, const CalibrationSettings& settings) {
     gui.session.committed_settings = settings;
     gui.session.mark_clean();
     KillTimer(gui.window, kAutoSaveTimer);
-    SetWindowTextW(gui.apply_button, L"Saved");
-    EnableWindow(gui.apply_button, FALSE);
-    EnableWindow(gui.before_after_button, FALSE);
+    ShowWindow(gui.apply_button, SW_HIDE);
 }
 
 void show_save_failed(GuiState& gui, const std::wstring& error) {
     set_status(gui, error, StatusTone::error);
-    SetWindowTextW(gui.apply_button, L"Retry save");
-    EnableWindow(gui.apply_button, TRUE);
+    ShowWindow(gui.apply_button, SW_SHOW);
 }
 
 void enable_modern_backdrop(HWND window) {
@@ -140,7 +129,7 @@ void set_display_status(GuiState& gui, const std::wstring& text) {
 
 
 
-bool save_and_apply_current(GuiState& gui, bool automatic) {
+bool save_and_apply_current(GuiState& gui, bool /*automatic*/) {
     if (!gui.session.dirty) return true;
 
     // When profiles.v1 is damaged the profile collection is read-only, but the
@@ -194,14 +183,13 @@ bool save_and_apply_current(GuiState& gui, bool automatic) {
                             rollback.error, StatusTone::error);
         }
         refresh_preset_buttons(gui);
-        SetWindowTextW(gui.apply_button, L"Retry save");
-        EnableWindow(gui.apply_button, TRUE);
+        ShowWindow(gui.apply_button, SW_SHOW);
         return false;
     }
     mark_committed(gui, profile.settings);
     gui.session.profile_switch_undo_available = false;
     refresh_preset_buttons(gui);
-    set_status(gui, automatic ? L"Saved automatically" : L"Saved", StatusTone::success);
+    set_status(gui, L"Saved", StatusTone::success);
     return true;
 }
 
@@ -442,49 +430,61 @@ void preview_selected(GuiState& gui) {
     }
 }
 
+// "Reset": returns the selected profile to the neutral response. The profile
+// and the display change together, so the sliders always describe the selected
+// profile; Ctrl+Z brings the previous adjustments back.
 void reset_selected(GuiState& gui) {
-    if (!pause_automatic_profiles(gui)) return;
     if (gui.active_preset >= gui.profiles.size()) return;
     const auto* display = selected_display(gui);
     if (!display) {
         set_status(gui, L"No display selected", StatusTone::warning);
         return;
     }
-
+    if (!restore_automatic_profiles(gui)) return;
+    // What the sliders show now, including an edit that has not auto-saved yet:
+    // this is what Ctrl+Z must bring back.
+    normalize_all_edits(gui);
+    const CalibrationSettings previous_params = params_from_sliders(gui);
+    const bool had_unsaved_edit = gui.session.dirty;
     if (!cancel_active_preview(gui)) return;
-    const GammaParams previous_params = params_from_sliders(gui);
-    if (settings_equal(previous_params, default_params()) &&
+    KillTimer(gui.window, kPreviewTimer);
+    KillTimer(gui.window, kAutoSaveTimer);
+    if (!had_unsaved_edit &&
+        settings_equal(gui.profiles[gui.active_preset].settings, default_params()) &&
         settings_equal(gui.session.committed_settings, default_params())) {
-        mark_committed(gui, default_params());
-        set_status(gui, L"Default settings are already active", StatusTone::idle);
+        set_status(gui, L"This profile is already neutral", StatusTone::idle);
         return;
     }
 
-    KillTimer(gui.window, kAutoSaveTimer);
+    // The undo snapshot is the profile as auto-save would have left it.
+    Profile previous_profile = gui.profiles[gui.active_preset];
+    if (had_unsaved_edit && gui.profile_store_available) {
+        previous_profile.settings = previous_params;
+        previous_profile.saved = true;
+    }
+    const std::size_t preset = gui.active_preset;
     set_params_to_controls(gui, default_params());
-    std::wstring error;
-    if (!gui.controller.apply_and_save(*display, default_params(), error)) {
+    gui.session.dirty = true;
+    if (!save_and_apply_current(gui, false)) {
+        // Nothing was saved: put the sliders back, and let a pending edit
+        // preview and save again as if Reset had not been pressed.
         set_params_to_controls(gui, previous_params);
-        if (settings_equal(previous_params, gui.session.committed_settings)) {
-            mark_committed(gui, gui.session.committed_settings);
-            set_status(gui, error, StatusTone::error);
+        gui.session.dirty = had_unsaved_edit;
+        if (had_unsaved_edit) {
+            if (gui.live_preview) SetTimer(gui.window, kPreviewTimer, 80, nullptr);
+            SetTimer(gui.window, kAutoSaveTimer, kAutoSaveDelayMs, nullptr);
         } else {
-            gui.session.dirty = true;
-            show_save_failed(gui, error);
+            ShowWindow(gui.apply_button, SW_HIDE);
         }
         return;
     }
-
-    // Restoring defaults changes only the selected display and its persisted
-    // per-display settings; the selected profile definition stays untouched.
-    mark_committed(gui, default_params());
     gui.session.profile_switch_undo_available = true;
     gui.session.undo_display_id = display_storage_id(*display);
-    gui.session.undo_preset = gui.active_preset;
+    gui.session.undo_preset = preset;
     gui.session.undo_params = previous_params;
-    gui.session.undo_profile = gui.profiles[gui.active_preset];
-    set_status(gui, L"Default settings restored  |  Ctrl+Z to undo",
-               StatusTone::success);
+    gui.session.undo_profile = previous_profile;
+    set_status(gui, previous_profile.name + L" reset. Ctrl+Z to undo", StatusTone::success);
+    schedule_automatic_profiles(gui);
 }
 
 void refresh_displays(GuiState& gui) {

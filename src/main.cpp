@@ -36,8 +36,8 @@ int WINAPI wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE,
     GuiState gui;
     gui.startup_launch = startup_launch;
     const UINT initial_dpi = GetDpiForSystem();
-    const int initial_width = MulDiv(1120, static_cast<int>(initial_dpi), 96);
-    const int initial_height = MulDiv(800, static_cast<int>(initial_dpi), 96);
+    const int initial_width = MulDiv(1080, static_cast<int>(initial_dpi), 96);
+    const int initial_height = MulDiv(700, static_cast<int>(initial_dpi), 96);
     HWND window = CreateWindowExW(0, kWindowClass, kApplicationTitle,
                                   WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX |
                                       WS_THICKFRAME | WS_MAXIMIZEBOX,
