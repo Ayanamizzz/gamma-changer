@@ -78,14 +78,15 @@ void draw_editor_card(HDC dc, const GuiState& gui, const UiGeometry& g) {
 
     const CalibrationSettings settings = params_from_sliders(gui);
     const GammaRamp ramp = gui.controller.generate_preview(settings);
+    // Plot every LUT entry at its own input position. Resampling to a
+    // different grid snaps each point to a neighbouring entry, and the sign of
+    // that snap flips mid-way, which drew a false kink at input 0.5.
     const auto curve_points = [&](std::size_t channel) {
         std::vector<ui::CurvePoint> points;
-        constexpr int kSamples = 128;
-        points.reserve(kSamples + 1);
-        for (int i = 0; i <= kSamples; ++i) {
-            const double input = i / static_cast<double>(kSamples);
-            const auto sample = static_cast<std::size_t>(input * (kRampSize - 1) + 0.5);
-            const double output = ramp.channel[channel][sample] / 65535.0;
+        points.reserve(kRampSize);
+        for (std::size_t i = 0; i < kRampSize; ++i) {
+            const double input = static_cast<double>(i) / static_cast<double>(kRampSize - 1);
+            const double output = ramp.channel[channel][i] / 65535.0;
             points.push_back({static_cast<float>(plot.left + (plot.right - plot.left) * input),
                               static_cast<float>(plot.bottom - (plot.bottom - plot.top) * output)});
         }
