@@ -240,13 +240,15 @@ ctest --preset release
 
 测试分层：
 
-1. 纯逻辑单测（LUT、范围、量化、规则匹配、列表索引/滚动）—— `core_safety_check`、
-   `app_profile_rules_check`、`app_profile_runtime_check`。
+1. 纯逻辑单测（LUT、范围、量化、规则匹配、列表索引/滚动、编辑会话）—— `core_safety_check`、
+   `app_profile_rules_check`、`app_profile_runtime_check`、`calibration_session_check`。
 2. 持久化集成测试（临时目录）—— `core_safety_check`、`profile_migration_check`。
 3. 事务测试（假 `DisplayRampBackend`）—— `calibration_transaction_check`、`app_profile_runtime_check`。
 4. 消息级 GUI 冒烟（真实胶水函数与窗口过程，假后端）—— `foreground_profile_check`：
    添加应用即保存并开启 Follow apps、其他应用的 profile 被固定、打开 profile 不影响应用、
-   托盘选择关闭切换、“Add app”菜单内容；以及未自动保存的改动的安全性（Reset 后 Ctrl+Z 恢复的是
+   托盘选择关闭切换、“Add app”菜单内容；Follow apps 对前台的决策（经注入的
+   `GuiState::foreground_app`：有规则/无规则的应用、托盘菜单保留应用的 profile、可见编辑器显示所选
+   profile、受保护应用、无前台窗口）；以及未自动保存的改动的安全性（Reset 后 Ctrl+Z 恢复的是
    改动本身、对比预览失败不丢计时器、按住对比期间暂停并在松开后恢复）。不做像素断言。
 5. 目视回归：`gamma_ui_snapshot <输出目录>` 在屏幕外渲染真实主窗口的几种状态并保存 PNG
    （临时数据目录与日志、假 LUT 后端、样例应用列表；不读写用户配置、不改显示器、不占单实例锁；
@@ -254,7 +256,8 @@ ctest --preset release
    工具若不关掉它，会把启动项改成指向工具自己）。改界面后对比截图。
    输出是**逐像素确定的**：前台应用经 `GuiState::foreground_app` 注入样例（真实前台窗口既不会
    出现在图里，也不会在 150 ms 评估中覆盖样例），真实 WinEvent 钩子被摘掉，每张图都按非激活
-   窗框绘制。两次运行的 PNG 可以逐像素比较，任何差异都来自代码改动。
+   窗框绘制。两次运行的 PNG 可以逐像素比较，任何差异都来自代码改动：
+   `python3 scripts/pngdiff.py before.png after.png` 报告不同像素数与包围盒（仅用标准库）。
 
 ## 7. 发布工程
 

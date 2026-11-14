@@ -271,8 +271,103 @@ bool check_app_assignment(const std::filesystem::path& root) {
     return ok;
 }
 
+// What "Follow apps" does with whatever is in front, through the injectable
+// foreground probe: an app with a rule, an app without one, this window
+// hidden (a tray menu) or visible (the editor), a failed lookup, no window.
+bool check_foreground_evaluation(const std::filesystem::path& root) {
+    WNDCLASSW owner_class{};
+    owner_class.lpfnWndProc = DefWindowProcW;
+    owner_class.hInstance = GetModuleHandleW(nullptr);
+    owner_class.lpszClassName = L"GammaChangerEvaluationOwner";
+    if (!RegisterClassW(&owner_class)) return false;
+
+    FakeBackend backend;
+    GuiState gui(root, backend);
+    DisplayInfo display;
+    display.device_name = L"FAKE-DISPLAY";
+    display.stable_id = L"fake-screen";
+    gui.displays.push_back(display);
+    CalibrationSettings desktop;
+    desktop.gamma = 1.05;
+    CalibrationSettings gaming;
+    gaming.gamma = 1.65;
+    backend.current = build_ramp(desktop);
+    gui.profiles = {builtin_default_profile(), {L"gaming", L"Gaming", gaming, true}};
+    const std::wstring game = L"C:\\Games\\Game.exe";
+    bind_app_profile_rule(gui.app_profile_config, {game, display.stable_id, L"gaming", true});
+    std::wstring error;
+    if (!gui.store.save_params(display.stable_id, desktop, error) ||
+        !gui.store.save_app_profile_config(gui.app_profile_config, error)) {
+        std::wcerr << L"FAIL: evaluation fixture persistence: " << error << L'\n';
+        return false;
+    }
+    gui.app_profile_config = gui.store.load_app_profile_config();
+    // Off-screen and never activated; only its visibility matters here.
+    gui.window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, owner_class.lpszClassName,
+                                 L"Owner", WS_POPUP, -32000, -32000, 100, 100, nullptr, nullptr,
+                                 owner_class.hInstance, nullptr);
+    if (!gui.window || !gui.app_profile_config.enabled) return false;
+
+    ForegroundApp front;
+    gui.foreground_app = [&] { return front; };
+    const auto external = [&](const std::wstring& path, DWORD lookup_error = ERROR_SUCCESS) {
+        front = ForegroundApp{true, false, path, lookup_error};
+        evaluate_automatic_profiles(gui);
+    };
+    const auto shows = [&](const CalibrationSettings& settings) {
+        return backend.current.channel == build_ramp(settings).channel;
+    };
+    bool ok = true;
+    int step_number = 0;
+    const auto step = [&](bool condition) {
+        ++step_number;
+        if (!condition) std::cout << "  evaluation step " << step_number << " failed\n";
+        ok &= condition;
+    };
+
+    external(game);
+    step(shows(gaming) && gui.foreground_application == game);
+    external(L"C:\\Apps\\Unbound.exe");
+    step(shows(desktop) && gui.foreground_application == L"C:\\Apps\\Unbound.exe");
+
+    // A hidden window of ours in front (a tray menu) keeps the last app's
+    // profile and still remembers that app for the "Add app" menu.
+    external(game);
+    front = ForegroundApp{true, true, L"", ERROR_SUCCESS};
+    evaluate_automatic_profiles(gui);
+    step(shows(gaming) && gui.foreground_application == game);
+
+    // The visible editor shows the selected profile instead.
+    ShowWindow(gui.window, SW_SHOWNOACTIVATE);
+    evaluate_automatic_profiles(gui);
+    step(shows(desktop) && gui.app_runtime.empty() && gui.foreground_application == game);
+    ShowWindow(gui.window, SW_HIDE);
+
+    // A protected app: its path is unknown, so other apps' profile applies and
+    // the reason is kept for the status line.
+    external(game);
+    external(L"", ERROR_ACCESS_DENIED);
+    step(shows(desktop) && gui.foreground_lookup_error == ERROR_ACCESS_DENIED &&
+         gui.status_tone == StatusTone::error);
+
+    // Nothing in front (the secure desktop, a lock screen): nothing changes.
+    external(game);
+    const unsigned writes = backend.writes;
+    front = ForegroundApp{};
+    evaluate_automatic_profiles(gui);
+    step(shows(gaming) && backend.writes == writes && gui.foreground_application == game);
+
+    DestroyWindow(gui.window);
+    gui.window = nullptr;
+    UnregisterClassW(owner_class.lpszClassName, owner_class.hInstance);
+    std::cout << (ok ? "PASS" : "FAIL")
+              << ": foreground app with a rule / without one; tray menu keeps the app's "
+                 "profile; visible editor shows the selected one; protected app; no window\n";
+    return ok;
+}
+
 // Reset and "Hold to compare" while an edit has not auto-saved yet. Real
-// trackbars stand in for the editor: the sliders are the model it reads.
+// trackbars stand in for the editor; they mirror gui.session.working.
 bool check_unsaved_edit_safety(const std::filesystem::path& root) {
     WNDCLASSW owner_class{};
     owner_class.lpfnWndProc = DefWindowProcW;
@@ -482,6 +577,7 @@ int main() {
     if (!InitCommonControlsEx(&controls)) return 1;
     bool ok = check_application_switching(data / L"assignments");
     ok = check_app_assignment(data / L"glue") && ok;
+    ok = check_foreground_evaluation(data / L"evaluation") && ok;
     ok = check_unsaved_edit_safety(data / L"edits") && ok;
     ok = check_schedule(data) && ok;
     std::error_code cleanup_error;
