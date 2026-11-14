@@ -30,6 +30,16 @@ private:
 
 std::wstring foreground_executable_path(HWND window, DWORD* error = nullptr);
 
+// The window in front right now, as "Follow apps" needs it.
+struct ForegroundApp {
+    bool has_window = false;
+    bool own_process = false;      // a window of this process
+    std::wstring executable_path;  // empty for this process or when the lookup failed
+    DWORD error = ERROR_SUCCESS;   // why the lookup failed (other processes only)
+};
+
+ForegroundApp current_foreground_app();
+
 struct RunningApplication {
     std::wstring executable_path;
     std::wstring window_title;

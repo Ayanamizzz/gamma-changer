@@ -72,6 +72,11 @@ bool save_png(HBITMAP bitmap, const std::filesystem::path& path) {
 }
 
 bool snapshot(HWND window, const std::filesystem::path& path) {
+    // Focus changes (an inline rename) can activate the window or not,
+    // depending on who holds the foreground. Always draw the inactive frame so
+    // runs are comparable pixel for pixel.
+    DefWindowProcW(window, WM_NCACTIVATE, FALSE, 0);
+    pump(100);
     RECT rect{};
     GetWindowRect(window, &rect);
     const int width = rect.right - rect.left;
@@ -180,9 +185,17 @@ int wmain(int argc, wchar_t** argv) {
     FakeBackend backend;
     int exit_code = 0;
     {
+        std::wstring sample_front = sample_running_apps()[0].executable_path;
         GuiState gui(root, backend);
         gui.manage_startup_entry = false;  // never touch the user's startup entry
         gui.startup_enabled = true;        // sample state for the picture
+        // Sample data only: the window never sees the real foreground app or
+        // the real running apps. Set before WM_CREATE schedules the first
+        // evaluation.
+        gui.foreground_app = [&] {
+            return ForegroundApp{true, false, sample_front, ERROR_SUCCESS};
+        };
+        gui.running_apps = sample_running_apps;
         const UINT dpi = GetDpiForSystem();
         const int width = MulDiv(1080, static_cast<int>(dpi), 96);
         const int height = MulDiv(700, static_cast<int>(dpi), 96);
@@ -194,16 +207,16 @@ int wmain(int argc, wchar_t** argv) {
                                           WS_MINIMIZEBOX | WS_THICKFRAME | WS_MAXIMIZEBOX,
                                       x, 0, width, height, nullptr, nullptr, instance, &gui);
         if (!window) return 1;
-        gui.running_apps = sample_running_apps;
+        // Real foreground changes would re-evaluate (and save pending edits)
+        // in the middle of a capture. The flag stays set, so it is not restarted.
+        gui.foreground_watcher.stop();
         ShowWindow(window, SW_SHOWNOACTIVATE);
         UpdateWindow(window);
         pump(900);
-        // Sample data only: never show the developer's real foreground app.
         const auto show_sample_app = [&](std::size_t index) {
-            pump(400);  // let any scheduled evaluation of the real foreground app run first
-            gui.foreground_application = sample_running_apps()[index].executable_path;
-            gui.foreground_lookup_error = ERROR_SUCCESS;
-            update_automatic_profile_controls(gui);
+            sample_front = sample_running_apps()[index].executable_path;
+            schedule_automatic_profiles(gui);
+            pump(400);  // the 150 ms evaluation runs against the sample app
             set_status(gui, L"Ready", StatusTone::success);
             pump(250);
         };

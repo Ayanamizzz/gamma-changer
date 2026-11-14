@@ -235,6 +235,9 @@ struct GuiState {
     std::unordered_map<std::wstring, HICON> app_icons;
     // Source of the "Add app" list; tests and the snapshot tool inject samples.
     std::function<std::vector<RunningApplication>()> running_apps;
+    // Source of "what is in front"; the snapshot tool injects a sample so the
+    // real foreground window never leaks into (or races with) its pictures.
+    std::function<ForegroundApp()> foreground_app;
 };
 
 // One row of the adjustment panel: an edit box mirroring a slider, its valid

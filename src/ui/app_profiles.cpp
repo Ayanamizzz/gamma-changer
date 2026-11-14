@@ -15,11 +15,12 @@
 namespace gamma_changer {
 namespace {
 
-bool editor_in_foreground(const GuiState& gui) {
-    DWORD process = 0;
-    GetWindowThreadProcessId(GetForegroundWindow(), &process);
-    return process == GetCurrentProcessId() && IsWindowVisible(gui.window) &&
-           !IsIconic(gui.window);
+ForegroundApp read_foreground(const GuiState& gui) {
+    return gui.foreground_app ? gui.foreground_app() : current_foreground_app();
+}
+
+bool editor_visible(const GuiState& gui) {
+    return IsWindowVisible(gui.window) && !IsIconic(gui.window);
 }
 
 const Profile* profile_by_id(const GuiState& gui, const std::wstring& id) {
@@ -355,18 +356,17 @@ bool restore_automatic_profiles(GuiState& gui) {
 }
 
 void evaluate_automatic_profiles(GuiState& gui, bool force) {
-    DWORD process = 0;
-    HWND foreground = GetForegroundWindow();
-    GetWindowThreadProcessId(foreground, &process);
-    const bool own_process = process == GetCurrentProcessId();
-    const std::wstring path = own_process ? gui.foreground_application
-        : foreground ? foreground_executable_path(foreground, &gui.foreground_lookup_error) : std::wstring{};
+    const ForegroundApp front = read_foreground(gui);
+    const bool own_process = front.own_process;
+    const bool external = front.has_window && !own_process;
+    if (external) gui.foreground_lookup_error = front.error;
+    const std::wstring path = own_process ? gui.foreground_application : front.executable_path;
     // Remember the last external app: it leads the "Add app" menu.
-    if (!own_process && foreground) gui.foreground_application = path;
+    if (external) gui.foreground_application = path;
     if (own_process) {
         // The visible editor shows the selected profile. Hidden tray menus
         // retain the last application's effect until focus returns.
-        const bool editing = editor_in_foreground(gui);
+        const bool editing = editor_visible(gui);
         if (editing) restore_automatic_profiles(gui);
         update_automatic_profile_controls(gui);
         // Display recovery may have overwritten the LUT while a hidden tray
@@ -378,7 +378,7 @@ void evaluate_automatic_profiles(GuiState& gui, bool force) {
         update_automatic_profile_controls(gui);
         return;
     }
-    if (path.empty() && !foreground) return;
+    if (path.empty() && !front.has_window) return;
     normalize_all_edits(gui);
     if (gui.session.dirty && !save_and_apply_current(gui, true)) return;
     KillTimer(gui.window, kPreviewTimer);

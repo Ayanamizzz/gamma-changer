@@ -111,6 +111,18 @@ std::wstring foreground_executable_path(HWND window, DWORD* error) {
     return path;
 }
 
+ForegroundApp current_foreground_app() {
+    ForegroundApp app;
+    const HWND window = GetForegroundWindow();
+    if (!window) return app;
+    app.has_window = true;
+    DWORD process_id = 0;
+    GetWindowThreadProcessId(window, &process_id);
+    app.own_process = process_id == GetCurrentProcessId();
+    if (!app.own_process) app.executable_path = foreground_executable_path(window, &app.error);
+    return app;
+}
+
 std::vector<RunningApplication> running_applications(DWORD excluded_process_id) {
     RunningApplicationEnumeration enumeration{excluded_process_id, {}, {}, {}};
     EnumWindows(collect_running_application, reinterpret_cast<LPARAM>(&enumeration));
