@@ -312,7 +312,7 @@ RECT profile_row_rect(const UiGeometry& geometry, std::size_t index, int scroll_
 // Shared internal functions used across the UI translation units.
 LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam);
 GuiState* state(HWND window);
-GammaParams params_from_sliders(const GuiState& gui);
+CalibrationSettings read_adjustment_controls(const GuiState& gui);
 void set_status(GuiState& gui, const std::wstring& text, StatusTone tone);
 void set_display_status(GuiState& gui, const std::wstring& text);
 const DisplayInfo* selected_display(const GuiState& gui);

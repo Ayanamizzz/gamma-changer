@@ -1,6 +1,6 @@
 # Gamma Changer 架构与重构说明
 
-最后更新：2026-11-14（2.6.2 之后：单窗口交互与界面重构，见 §8）
+最后更新：2026-11-14（2.6.2 之后：单窗口交互与界面重构，见 §8；R1 第一步，见 §5）
 
 本文档是项目的**架构基准**：说明系统应该长什么样、哪些不变量不能破坏、这一轮做了什么、
 还欠了哪些债以及偿还顺序。历史审计见 `Gamma-Changer-Optimization-Audit.md`。
@@ -27,7 +27,7 @@ Gamma Changer 的业务内核很小：**把一组校准参数变成 LUT，写到
 | A8 | **同一常量/规则多处定义**：`kBuiltinProfileId` 两份；损坏回退列表在 `WM_CREATE` 里重写了一遍 `ProfileManager` 的迁移规则（且命名不一致） | 领域规则漂移 | ✅ 收归 `ProfileManager` |
 | A9 | **构建图冗余**：每个测试目标手工重复列源文件，GUI 测试从 GUI 源列表里 `REMOVE_ITEM` | 新模块要改 6 处；依赖边界不可见 | ✅ `gamma_core` / `gamma_ui` 静态库 |
 | B1 | `GuiState` 是上帝对象（~100 个字段：HWND、GDI、领域状态、服务实例、定时器标志混在一起） | 状态转移不可推理、不可测 | ⏳ 路线图 R1 |
-| B2 | **控件是模型**：`params_from_sliders()` 是“当前设置”的唯一来源 | 模型精度受控件约束；会话逻辑无法脱离窗口 | ⏳ R1 |
+| B2 | **控件是模型**：`params_from_sliders()` 是“当前设置”的唯一来源 | 模型精度受控件约束；会话逻辑无法脱离窗口 | ✅ `session.working` 是唯一真相（R1 第一步） |
 | B3 | `save_and_apply_current` / `preserve_pending_adjustment` 等用例函数在 UI 层，且对“profile 库可写/只读”各写一遍 | 事务语义分散 | ⏳ R2 |
 | B4 | `app_profiles.cpp` 1000+ 行，三个对话框 + 运行时胶水 | 难以维护 | ⏳ R3 |
 | B5 | 状态栏文案即事件（字符串散落各处，无 i18n） | 无法本地化、无法断言 | ⏳ R4 |
@@ -180,6 +180,20 @@ working_settings ──edit──▶ dirty
 - 状态转移（编辑、切换 profile、撤销、恢复默认、切换显示器）成为 `CalibrationSession` 的方法，
   返回“需要提交/需要预览/需要刷新 UI”的意图，由 UI 执行。
 - 收益：B1/B2 的大头；手动校准用例可以像 `AppProfileRuntime` 一样无窗口测试。
+
+**第一步 ✅（2026-11-14）**：`CalibrationSession::working` 成为当前设置的唯一来源，
+`params_from_sliders()` 已删除。
+
+- 核心：`quantize_settings()`（范围钳制 + 0.01 网格，非有限值回中性）；`load` / `edit` /
+  `show` / `mark_committed`。`edit()` 统一计算 dirty；`committed_settings` 与 `working`
+  同一网格，旧文件中的离网格值不会被误判为未保存改动。`calibration_session_check` 覆盖。
+- 表现层只有两个接缝：用户输入一律经 `mark_changed()` →
+  `session.edit(read_adjustment_controls())`；代码写入一律经 `set_params_to_controls()` →
+  `session.show()` 再镜像到控件。其余代码（绘制、提交、撤销快照、预览）只读 `session.working`。
+- 截图逐像素不变；`foreground_profile_check` 断言控件与 `working` 一致。
+
+**下一步**：把切换 profile、Reset、撤销、切换显示器的状态转移移进 session（返回“需要提交/
+预览/刷新”的意图），之后 `show()` 这个过渡接口即可收窄。
 
 ### R2 — `CalibrationService`：把用例从 `application.cpp` 移进 core（中收益，中风险）
 

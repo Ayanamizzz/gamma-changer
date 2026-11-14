@@ -34,7 +34,8 @@ void set_status(GuiState& gui, const std::wstring& text,
 }
 
 void mark_changed(GuiState& gui) {
-    gui.session.dirty = !settings_equal(params_from_sliders(gui), gui.session.committed_settings);
+    // Headless GuiState (tests, tools) has no controls: working is already current.
+    gui.session.edit(gui.gamma_slider ? read_adjustment_controls(gui) : gui.session.working);
     ShowWindow(gui.apply_button, SW_HIDE);
     if (gui.session.dirty) {
         SetTimer(gui.window, kAutoSaveTimer, kAutoSaveDelayMs, nullptr);
@@ -54,8 +55,7 @@ void mark_changed(GuiState& gui) {
 }
 
 void mark_committed(GuiState& gui, const CalibrationSettings& settings) {
-    gui.session.committed_settings = settings;
-    gui.session.mark_clean();
+    gui.session.mark_committed(settings);
     KillTimer(gui.window, kAutoSaveTimer);
     ShowWindow(gui.apply_button, SW_HIDE);
 }
@@ -140,7 +140,7 @@ bool save_and_apply_current(GuiState& gui, bool /*automatic*/) {
             set_status(gui, L"No display selected", StatusTone::warning);
             return false;
         }
-        const CalibrationSettings settings = params_from_sliders(gui);
+        const CalibrationSettings settings = gui.session.working;
         const CommitResult commit = gui.controller.commit(*display, settings);
         if (!commit.succeeded()) {
             show_save_failed(gui, commit.error);
@@ -161,7 +161,7 @@ bool save_and_apply_current(GuiState& gui, bool /*automatic*/) {
     if (profile.name.empty()) {
         profile.name = L"Custom " + std::to_wstring(gui.active_preset + 1);
     }
-    profile.settings = params_from_sliders(gui);
+    profile.settings = gui.session.working;
     const auto* display = selected_display(gui);
     if (!display) {
         profile = previous;
@@ -199,7 +199,7 @@ bool preserve_pending_adjustment(GuiState& gui) {
     if (!display) return false;
     KillTimer(gui.window, kPreviewTimer);
     KillTimer(gui.window, kAutoSaveTimer);
-    const CalibrationSettings settings = params_from_sliders(gui);
+    const CalibrationSettings settings = gui.session.working;
     if (!gui.profile_store_available) {
         std::wstring error;
         if (!gui.controller.save_for_offline_display(*display, settings, error)) {
@@ -351,7 +351,7 @@ bool apply_preferred_profile_to_display(GuiState& gui, const DisplayInfo& displa
     }
 
     const std::size_t previous_preset = gui.active_preset;
-    const GammaParams previous_params = params_from_sliders(gui);
+    const GammaParams previous_params = gui.session.working;
     const CalibrationSettings previous_committed = gui.session.committed_settings;
 
     gui.active_preset = profile_index;
@@ -421,7 +421,7 @@ void preview_selected(GuiState& gui) {
     }
 
     std::wstring error;
-    if (!gui.controller.preview(*display, params_from_sliders(gui), error)) {
+    if (!gui.controller.preview(*display, gui.session.working, error)) {
         set_status(gui, error, StatusTone::error);
         return;
     }
@@ -444,7 +444,7 @@ void reset_selected(GuiState& gui) {
     // What the sliders show now, including an edit that has not auto-saved yet:
     // this is what Ctrl+Z must bring back.
     normalize_all_edits(gui);
-    const CalibrationSettings previous_params = params_from_sliders(gui);
+    const CalibrationSettings previous_params = gui.session.working;
     const bool had_unsaved_edit = gui.session.dirty;
     if (!cancel_active_preview(gui)) return;
     KillTimer(gui.window, kPreviewTimer);

@@ -130,8 +130,10 @@ bool read_edit(HWND edit, double& value) {
 
 }  // namespace
 
-GammaParams params_from_sliders(const GuiState& gui) {
-    GammaParams params;
+// Input path only: what the user has put into the controls. Everything else
+// reads gui.session.working, which mark_changed() keeps in step with this.
+CalibrationSettings read_adjustment_controls(const GuiState& gui) {
+    CalibrationSettings params;
     for (const auto& binding : adjustment_bindings(gui)) {
         params.*binding.field = slider_setting(binding.slider);
     }
@@ -351,9 +353,10 @@ void set_adjustment_enabled(GuiState& gui, bool enabled) {
 
 
 void set_params_to_controls(GuiState& gui, const GammaParams& params) {
+    gui.session.show(params);
     gui.syncing_controls = true;
     for (const auto& binding : adjustment_bindings(gui)) {
-        set_slider(binding.slider, params.*binding.field);
+        set_slider(binding.slider, gui.session.working.*binding.field);
     }
     gui.syncing_controls = false;
     update_value_labels(gui);

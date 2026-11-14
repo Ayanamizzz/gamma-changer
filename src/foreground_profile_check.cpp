@@ -346,13 +346,15 @@ bool check_unsaved_edit_safety(const std::filesystem::path& root) {
     drag_gamma(1.50);
     CalibrationSettings edited = reading;
     edited.gamma = 1.50;
-    step(gui.session.dirty && settings_equal(params_from_sliders(gui), edited));
+    step(gui.session.dirty && settings_equal(gui.session.working, edited));
     reset_selected(gui);
-    step(!gui.session.dirty && settings_equal(params_from_sliders(gui), default_params()) &&
+    step(!gui.session.dirty && settings_equal(gui.session.working, default_params()) &&
          settings_equal(gui.profiles[1].settings, default_params()) && shows(default_params()));
     undo_profile_switch(gui);
-    step(!gui.session.dirty && settings_equal(params_from_sliders(gui), edited) &&
+    step(!gui.session.dirty && settings_equal(gui.session.working, edited) &&
          settings_equal(gui.profiles[1].settings, edited) && shows(edited));
+    // The session is the model; the controls are only its view.
+    step(settings_equal(read_adjustment_controls(gui), gui.session.working));
 
     // A neutral profile with an unsaved edit: Reset still resets, and undoes.
     step(open_profile(0));
@@ -361,9 +363,9 @@ bool check_unsaved_edit_safety(const std::filesystem::path& root) {
     edited.gamma = 1.30;
     reset_selected(gui);
     step(gui.session.profile_switch_undo_available &&
-         settings_equal(params_from_sliders(gui), default_params()));
+         settings_equal(gui.session.working, default_params()));
     undo_profile_switch(gui);
-    step(settings_equal(params_from_sliders(gui), edited) &&
+    step(settings_equal(gui.session.working, edited) &&
          settings_equal(gui.profiles[0].settings, edited) && shows(edited));
     // Nothing to reset and nothing pending: no undo step is created.
     step(open_profile(0));

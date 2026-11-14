@@ -76,7 +76,7 @@ void draw_editor_card(HDC dc, const GuiState& gui, const UiGeometry& g) {
                 static_cast<float>(plot.right), static_cast<float>(plot.top),
                 Theme::reference_curve, 1.4f, 255, true);
 
-    const CalibrationSettings settings = params_from_sliders(gui);
+    const CalibrationSettings settings = gui.session.working;
     const GammaRamp ramp = gui.controller.generate_preview(settings);
     // Plot every LUT entry at its own input position. Resampling to a
     // different grid snaps each point to a neighbouring entry, and the sign of

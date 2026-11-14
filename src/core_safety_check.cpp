@@ -471,8 +471,9 @@ bool check_profile_list_logic() {
                  L"an undo snapshot must apply to its captured display");
     ok &= expect(!session.undo_applies_to(L"display-2"),
                  L"an undo snapshot must be display-scoped");
-    session.mark_clean();
-    ok &= expect(!session.dirty, L"mark_clean must clear the dirty flag");
+    session.dirty = true;
+    session.mark_committed(default_params());
+    ok &= expect(!session.dirty, L"mark_committed must clear the dirty flag");
     session.clear_undo();
     ok &= expect(!session.profile_switch_undo_available &&
                      session.undo_display_id.empty(),

@@ -266,7 +266,7 @@ void select_preset(GuiState& gui, std::size_t index) {
         gui.session.undo_display_id = display_storage_id(*current_display);
     }
     gui.session.undo_preset = gui.active_preset;
-    gui.session.undo_params = params_from_sliders(gui);
+    gui.session.undo_params = gui.session.working;
     gui.session.undo_profile = gui.profiles[gui.active_preset];
     const std::wstring previous_id = gui.profiles[gui.active_preset].id;
     gui.active_preset = index;

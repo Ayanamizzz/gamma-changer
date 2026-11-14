@@ -84,6 +84,7 @@ gamma_core_test(profile_migration_check --self-test)
 gamma_core_test(calibration_transaction_check)
 gamma_core_test(app_profile_rules_check)
 gamma_core_test(app_profile_runtime_check)
+gamma_core_test(calibration_session_check)
 
 # Drives the real window procedure and app-assignment glue (resources needed).
 add_executable(foreground_profile_check src/foreground_profile_check.cpp ${gamma_resources})
